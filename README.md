@@ -14,6 +14,6 @@ https://sphenolithus.github.io/taiwan-road-mileage-locator/
 
 備註：
 
-本網頁為戀行應用 Codex 成果，原創者為楊宇恩博士。
+本網頁為練習應用 Codex 成果，原創者為楊宇恩博士。
 
 正式資料已轉換為 `data/mileposts.geojson.gz.b64`，由前端解壓縮後載入。
