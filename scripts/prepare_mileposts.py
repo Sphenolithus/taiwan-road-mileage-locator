@@ -20,7 +20,18 @@ DIRECTION_MAP = {
     "西行": "west",
 }
 
-TARGET_PROVINCIAL_ROUTES = {"台1線", "台3線", "台9線", "台17線", "台20線"}
+TARGET_PROVINCIAL_ROUTES = {
+    "台1線",
+    "台2線",
+    "台3線",
+    "台7線",
+    "台9線",
+    "台11線",
+    "台14線",
+    "台17線",
+    "台18線",
+    "台20線",
+}
 EXPRESSWAY_ROUTES = {
     "台61線",
     "台62線",
