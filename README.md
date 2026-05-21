@@ -1,14 +1,8 @@
-# 台灣道路里程定位
+﻿# ?啁?楝??摰?
 
-GitHub Pages 網址：
+GitHub Pages 蝬脣?嚗?
+https://sphenolithus.github.io/taiwan-road-mileage-locator/
 
-https://sphenolithus.github.io/v/taiwan-road-mileage-locator/
-
-功能：
-
-- 依高速公路、快速道路、平面道路分類。
-- 可選路線、方向與輸入里程。
-- 用 OpenLayers 顯示定位結果。
-- 產生 Google Street View URL，不需要 Google Maps API key。
-
-正式資料已轉換為 `data/mileposts.geojson.gz.b64`，由前端解壓縮後載入。
+?嚗?
+- 靘??頝胯翰??頝胯像?ａ?頝臬?憿?- ?舫頝舐????頛詨????- ??OpenLayers 憿舐內摰?蝯???- ?Ｙ? Google Street View URL嚗??閬?Google Maps API key??
+甇??鞈?撌脰?? `data/mileposts.geojson.gz.b64`嚗?垢閫??蝮桀?頛??
