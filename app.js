@@ -232,26 +232,113 @@ function locate() {
     return;
   }
 
-  const nearest = pool.reduce((best, feature) => {
-    const diff = Math.abs(Number(feature.properties.km) - km);
-    return !best || diff < best.diff ? { feature, diff } : best;
-  }, null);
+  const match = resolveMilepost(pool, km);
 
-  if (!nearest) {
+  if (!match) {
     renderNoResult(route, direction);
     return;
   }
 
-  state.selectedFeature = nearest.feature;
+  state.selectedFeature = match.feature;
   refreshMap();
 
-  const lonLat = nearest.feature.geometry.coordinates;
+  const lonLat = match.feature.geometry.coordinates;
   const streetViewUrl = makeStreetViewUrl(lonLat);
   streetViewButton.href = streetViewUrl;
   streetViewButton.classList.remove("is-disabled");
   map.getView().animate({ center: ol.proj.fromLonLat(lonLat), zoom: 15, duration: 350 });
-  renderResult(nearest.feature, nearest.diff, lonLat, streetViewUrl);
-  renderPopup(nearest.feature, lonLat);
+  renderResult(match.feature, match.diff, lonLat, streetViewUrl);
+  renderPopup(match.feature, lonLat);
+}
+
+function resolveMilepost(pool, km) {
+  const sorted = pool
+    .filter(feature => Number.isFinite(feature.properties.km) && Array.isArray(feature.geometry.coordinates))
+    .slice()
+    .sort((a, b) => Number(a.properties.km) - Number(b.properties.km));
+
+  if (!sorted.length) return null;
+
+  const exact = sorted.find(feature => Math.abs(Number(feature.properties.km) - km) < 0.0005);
+  if (exact) {
+    return {
+      feature: cloneFeature(exact, {
+        matchType: "direct",
+        requestedKm: km
+      }),
+      diff: 0
+    };
+  }
+
+  let lower = null;
+  let upper = null;
+  for (const feature of sorted) {
+    const featureKm = Number(feature.properties.km);
+    if (featureKm < km) lower = feature;
+    if (featureKm > km) {
+      upper = feature;
+      break;
+    }
+  }
+
+  if (lower && upper && Number(upper.properties.km) !== Number(lower.properties.km)) {
+    const lowerKm = Number(lower.properties.km);
+    const upperKm = Number(upper.properties.km);
+    const ratio = (km - lowerKm) / (upperKm - lowerKm);
+    const lowerCoord = lower.geometry.coordinates;
+    const upperCoord = upper.geometry.coordinates;
+    const interpolatedCoord = [
+      lowerCoord[0] + (upperCoord[0] - lowerCoord[0]) * ratio,
+      lowerCoord[1] + (upperCoord[1] - lowerCoord[1]) * ratio
+    ];
+
+    return {
+      feature: {
+        type: "Feature",
+        properties: {
+          ...lower.properties,
+          km,
+          label: `${formatKm(km)} 內插估算`,
+          matchType: "interpolated",
+          requestedKm: km,
+          lowerKm,
+          upperKm
+        },
+        geometry: {
+          type: "Point",
+          coordinates: interpolatedCoord
+        }
+      },
+      diff: 0
+    };
+  }
+
+  const nearest = sorted.reduce((best, feature) => {
+    const diff = Math.abs(Number(feature.properties.km) - km);
+    return !best || diff < best.diff ? { feature, diff } : best;
+  }, null);
+
+  return {
+    feature: cloneFeature(nearest.feature, {
+      matchType: "nearest",
+      requestedKm: km
+    }),
+    diff: nearest.diff
+  };
+}
+
+function cloneFeature(feature, extraProperties = {}) {
+  return {
+    type: feature.type,
+    properties: {
+      ...feature.properties,
+      ...extraProperties
+    },
+    geometry: {
+      type: feature.geometry.type,
+      coordinates: [...feature.geometry.coordinates]
+    }
+  };
 }
 
 function parseMileageInput(value) {
@@ -281,12 +368,27 @@ function makeStreetViewUrl([lon, lat]) {
 }
 
 function renderResult(feature, diff, [lon, lat], streetViewUrl) {
+  const properties = feature.properties;
+  const modeLabels = {
+    direct: "原始里程點",
+    interpolated: "內插估算",
+    nearest: "最近里程點"
+  };
+  const intervalRow = properties.matchType === "interpolated"
+    ? `<span>估算區間</span><strong>${formatKm(properties.lowerKm)} - ${formatKm(properties.upperKm)}</strong>`
+    : "";
+  const diffRow = properties.matchType === "nearest"
+    ? `<span>差距</span><strong>${diff.toFixed(2)} km</strong>`
+    : "";
+
   resultCard.innerHTML = `
-    <div class="result-title">${feature.properties.route} ${DIRECTIONS[feature.properties.direction] || feature.properties.direction} ${formatKm(feature.properties.km)}</div>
+    <div class="result-title">${properties.route} ${DIRECTIONS[properties.direction] || properties.direction} ${formatKm(properties.km)}</div>
     <div class="result-grid">
       <span>座標</span><strong>${lat.toFixed(6)}, ${lon.toFixed(6)}</strong>
-      <span>差距</span><strong>${diff.toFixed(2)} km</strong>
-      <span>來源</span><strong>${feature.properties.label || "里程點資料"}</strong>
+      <span>定位方式</span><strong>${modeLabels[properties.matchType] || "里程點資料"}</strong>
+      ${intervalRow}
+      ${diffRow}
+      <span>來源</span><strong>${properties.label || "里程點資料"}</strong>
     </div>
     <p class="muted">Street View 會開啟 Google Maps 全景檢視；正式嵌入頁面需要 Google Maps API key。</p>
   `;
@@ -302,8 +404,9 @@ function renderNoResult(route, direction) {
 }
 
 function renderPopup(feature, [lon, lat]) {
+  const suffix = feature.properties.matchType === "interpolated" ? "（內插估算）" : "";
   popupElement.innerHTML = `
-    <h3>${feature.properties.route} ${formatKm(feature.properties.km)}</h3>
+    <h3>${feature.properties.route} ${formatKm(feature.properties.km)}${suffix}</h3>
     <p>${DIRECTIONS[feature.properties.direction] || feature.properties.direction}<br>${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
   `;
   popup.setPosition(ol.proj.fromLonLat([lon, lat]));
