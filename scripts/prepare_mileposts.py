@@ -20,30 +20,21 @@ DIRECTION_MAP = {
     "西行": "west",
 }
 
-TARGET_PROVINCIAL_ROUTES = {
-    "台1線",
-    "台2線",
-    "台3線",
-    "台7線",
-    "台7甲線",
-    "台8線",
-    "台9線",
-    "台11線",
-    "台14線",
-    "台14甲線",
-    "台17線",
-    "台18線",
-    "台20線",
-}
 EXPRESSWAY_ROUTES = {
     "台61線",
+    "台61乙線",
     "台62線",
+    "台62甲線",
+    "台63線",
+    "台63甲線",
     "台64線",
     "台65線",
     "台66線",
     "台68線",
+    "台68甲線",
     "台72線",
     "台74線",
+    "台74甲線",
     "台76線",
     "台78線",
     "台82線",
@@ -55,9 +46,12 @@ EXPRESSWAY_ROUTES = {
 DEFAULT_DIRECTIONS = {
     "台20線": ["east", "west"],
     "台62線": ["east", "west"],
+    "台62甲線": ["east", "west"],
+    "台63甲線": ["east", "west"],
     "台64線": ["east", "west"],
     "台66線": ["east", "west"],
     "台68線": ["east", "west"],
+    "台68甲線": ["east", "west"],
     "台72線": ["east", "west"],
     "台78線": ["east", "west"],
     "台82線": ["east", "west"],
@@ -120,7 +114,7 @@ def infer_category(route):
 
 
 def in_scope(route):
-    return route.startswith("國道") or route in EXPRESSWAY_ROUTES or route in TARGET_PROVINCIAL_ROUTES
+    return route.startswith("國道") or route.startswith("台")
 
 
 def first_value(row, names):

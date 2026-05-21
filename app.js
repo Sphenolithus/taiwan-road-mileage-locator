@@ -17,8 +17,8 @@ const SAMPLE_MILEPOSTS = {
 
 const ROUTE_GROUPS = {
   freeway: ["國道1號", "國道3號", "國道5號", "國道6號", "國道8號", "國道10號"],
-  expressway: ["台61線", "台62線", "台64線", "台65線", "台66線", "台68線", "台72線", "台74線", "台76線", "台78線", "台82線", "台84線", "台86線", "台88線"],
-  provincial: ["台1線", "台2線", "台3線", "台7線", "台7甲線", "台8線", "台9線", "台11線", "台14線", "台14甲線", "台17線", "台18線", "台20線"]
+  expressway: ["台61線", "台61乙線", "台62線", "台62甲線", "台63線", "台63甲線", "台64線", "台65線", "台66線", "台68線", "台68甲線", "台72線", "台74線", "台74甲線", "台76線", "台78線", "台82線", "台84線", "台86線", "台88線"],
+  provincial: []
 };
 
 const DIRECTIONS = {
@@ -44,9 +44,12 @@ const INTERPOLATION_GAP_LIMITS = {
 const DEFAULT_ROUTE_DIRECTIONS = {
   "台20線": ["east", "west"],
   "台62線": ["east", "west"],
+  "台62甲線": ["east", "west"],
+  "台63甲線": ["east", "west"],
   "台64線": ["east", "west"],
   "台66線": ["east", "west"],
   "台68線": ["east", "west"],
+  "台68甲線": ["east", "west"],
   "台72線": ["east", "west"],
   "台78線": ["east", "west"],
   "台82線": ["east", "west"],
@@ -100,16 +103,6 @@ const map = new ol.Map({
     zoom: 7.5
   })
 });
-
-const popupElement = document.createElement("div");
-popupElement.className = "ol-popup";
-const popup = new ol.Overlay({
-  element: popupElement,
-  offset: [0, -14],
-  positioning: "bottom-center",
-  stopEvent: false
-});
-map.addOverlay(popup);
 
 function point(category, route, direction, km, lat, lon, label) {
   return {
@@ -190,7 +183,6 @@ async function loadData() {
 function markPending() {
   state.selectedFeature = null;
   vectorSource.clear();
-  popup.setPosition(undefined);
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
   resultCard.innerHTML = `<p class="muted">請確認道路、方向與里程，按「定位」後地圖才會跳轉。</p>`;
@@ -224,9 +216,17 @@ function refreshRouteOptions() {
   const dataRoutes = state.data.features
     .map(feature => feature.properties.route)
     .filter(route => inferCategory(route) === state.category);
-  const routes = Array.from(new Set([...officialRoutes, ...dataRoutes]));
+  const routes = Array.from(new Set([...officialRoutes, ...dataRoutes]))
+    .sort((left, right) => routeSortKey(left).localeCompare(routeSortKey(right), "zh-Hant", { numeric: true }));
   routeSelect.innerHTML = routes.map(route => `<option value="${route}">${route}</option>`).join("");
   refreshDirectionOptions();
+}
+
+function routeSortKey(route) {
+  const match = String(route).match(/^(國道|台)(\d+)(甲|乙|丙|丁|戊|己)?/);
+  if (!match) return route;
+  const suffixOrder = { 甲: "1", 乙: "2", 丙: "3", 丁: "4", 戊: "5", 己: "6" };
+  return `${match[1]}${String(match[2]).padStart(3, "0")}${suffixOrder[match[3]] || "0"}`;
 }
 
 function refreshDirectionOptions() {
@@ -293,7 +293,6 @@ async function locate() {
   streetViewButton.classList.remove("is-disabled");
   map.getView().animate({ center: ol.proj.fromLonLat(lonLat), zoom: 15, duration: 350 });
   renderResult(match.feature, match.diff, lonLat, streetViewUrl);
-  renderPopup(match.feature, lonLat);
 }
 
 async function resolveMilepost(pool, km) {
@@ -306,13 +305,17 @@ async function resolveMilepost(pool, km) {
 
   const exact = sorted.find(feature => Math.abs(Number(feature.properties.km) - km) < 0.0005);
   if (exact) {
+    const snapped = await snapToRoad(exact.geometry.coordinates);
+    const feature = cloneFeature(exact, {
+      matchType: "direct",
+      requestedKm: km,
+      confidence: "high",
+      interpolationMethod: snapped ? "road" : "milepost",
+      roadGeometryStatus: snapped ? "已貼合道路" : ""
+    });
+    if (snapped) feature.geometry.coordinates = snapped.coordinate;
     return {
-      feature: cloneFeature(exact, {
-        matchType: "direct",
-        requestedKm: km,
-        confidence: "high",
-        interpolationMethod: "milepost"
-      }),
+      feature,
       diff: 0
     };
   }
@@ -344,12 +347,17 @@ async function resolveMilepost(pool, km) {
     let roadDistanceKm = null;
     let roadGeometryStatus = "";
 
-    if (gapKm > INTERPOLATION_GAP_LIMITS.high) {
-      const roadMatch = await interpolateAlongRoad(lowerCoord, upperCoord, ratio, gapKm);
-      if (roadMatch) {
-        interpolatedCoord = roadMatch.coordinate;
+    const roadMatch = await interpolateAlongRoad(lowerCoord, upperCoord, ratio, gapKm);
+    if (roadMatch) {
+      interpolatedCoord = roadMatch.coordinate;
+      interpolationMethod = "road";
+      roadDistanceKm = roadMatch.distanceKm;
+    } else {
+      const snapped = await snapToRoad(interpolatedCoord);
+      if (snapped) {
+        interpolatedCoord = snapped.coordinate;
         interpolationMethod = "road";
-        roadDistanceKm = roadMatch.distanceKm;
+        roadGeometryStatus = "無法取得完整道路線形，已將估算點貼合最近道路";
       } else {
         roadGeometryStatus = "無法取得道路線形，已退回兩點直線估算";
       }
@@ -386,13 +394,18 @@ async function resolveMilepost(pool, km) {
     return !best || diff < best.diff ? { feature, diff } : best;
   }, null);
 
+  const snapped = await snapToRoad(nearest.feature.geometry.coordinates);
+  const nearestFeature = cloneFeature(nearest.feature, {
+    matchType: "nearest",
+    requestedKm: km,
+    confidence: "low",
+    interpolationMethod: snapped ? "road" : "nearest",
+    roadGeometryStatus: snapped ? "已將最近里程點貼合道路" : ""
+  });
+  if (snapped) nearestFeature.geometry.coordinates = snapped.coordinate;
+
   return {
-    feature: cloneFeature(nearest.feature, {
-      matchType: "nearest",
-      requestedKm: km,
-      confidence: "low",
-      interpolationMethod: "nearest"
-    }),
+    feature: nearestFeature,
     diff: nearest.diff
   };
 }
@@ -420,6 +433,29 @@ async function interpolateAlongRoad(startCoord, endCoord, ratio, expectedGapKm) 
     return {
       coordinate: interpolateAlongCoordinates(coordinates, ratio),
       distanceKm
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function snapToRoad(coord) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3500);
+  try {
+    const url = `https://router.project-osrm.org/nearest/v1/driving/${coord[0]},${coord[1]}?number=1`;
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const waypoint = payload.waypoints?.[0];
+    if (!Array.isArray(waypoint?.location)) return null;
+    const distanceMeters = Number(waypoint.distance);
+    if (Number.isFinite(distanceMeters) && distanceMeters > 1000) return null;
+    return {
+      coordinate: waypoint.location,
+      distanceMeters
     };
   } catch {
     return null;
@@ -572,20 +608,9 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl) {
 function renderNoResult(route, direction) {
   state.selectedFeature = null;
   vectorSource.clear();
-  popup.setPosition(undefined);
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
   resultCard.innerHTML = `<p class="muted">找不到 ${route || "此路線"} ${DIRECTIONS[direction] || direction || ""} 的里程資料。請先匯入官方里程點。</p>`;
-}
-
-function renderPopup(feature, [lon, lat]) {
-  const suffix = feature.properties.matchType === "interpolated" ? "（內插估算）" : "";
-  const confidence = feature.properties.confidence === "low" ? "<br>資料稀疏，低可信度" : "";
-  popupElement.innerHTML = `
-    <h3>${feature.properties.route} ${formatKm(feature.properties.km)}${suffix}</h3>
-    <p>${DIRECTIONS[feature.properties.direction] || feature.properties.direction}${confidence}<br>${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
-  `;
-  popup.setPosition(ol.proj.fromLonLat([lon, lat]));
 }
 
 function formatKm(km) {
@@ -609,6 +634,12 @@ routeSelect.addEventListener("change", () => {
 });
 directionSelect.addEventListener("change", markPending);
 kmInput.addEventListener("input", markPending);
+kmInput.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    locate();
+  }
+});
 locateButton.addEventListener("click", locate);
 
 map.on("click", event => {
