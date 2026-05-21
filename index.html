@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>台灣主要道路里程定位</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="control-panel" aria-label="道路里程定位條件">
+        <div class="brand-block">
+          <p class="eyebrow">Road Milepost Locator</p>
+          <h1>台灣主要道路里程定位</h1>
+        </div>
+
+        <div class="field-group">
+          <span class="field-label">道路類別</span>
+          <div class="segmented" role="group" aria-label="道路類別">
+            <button class="segment is-active" type="button" data-category="freeway">高速公路</button>
+            <button class="segment" type="button" data-category="expressway">快速道路</button>
+            <button class="segment" type="button" data-category="provincial">平面道路</button>
+          </div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">路線</span>
+          <select id="routeSelect"></select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">方向</span>
+          <select id="directionSelect"></select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">里程</span>
+          <div class="mile-input">
+            <input id="kmInput" type="text" value="10.0" inputmode="text" placeholder="例：100K+400、100K400、100.4" />
+            <span>km</span>
+          </div>
+        </label>
+
+        <div class="actions">
+          <button id="locateButton" class="primary-button" type="button">定位</button>
+          <a id="streetViewButton" class="secondary-button is-disabled" target="_blank" rel="noreferrer">Street View</a>
+        </div>
+
+        <section id="resultCard" class="result-card" aria-live="polite">
+          <p class="muted">請選擇道路與方向，輸入罰單上的里程數。</p>
+        </section>
+
+        <section class="data-panel">
+          <h2>資料狀態</h2>
+          <p id="dataStatus"></p>
+        </section>
+
+        <section class="note-panel">
+          <h2>備註</h2>
+          <p>本網頁為戀行應用 Codex 成果，原創者為楊宇恩博士。</p>
+          <p>可依罰單上的道路、方向與里程定位拍攝位置，支援 100K+400、100K400、100.4 等格式輸入與查詢。</p>
+        </section>
+      </section>
+
+      <section class="map-panel" aria-label="定位地圖">
+        <div id="map" class="map"></div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
+    <script src="./app.js?v=20260521-title-note-mileage-parser"></script>
+  </body>
+</html>
