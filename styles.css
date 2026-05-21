@@ -173,6 +173,11 @@ a:focus-visible {
   background: var(--accent-strong);
 }
 
+.primary-button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
 .secondary-button {
   border: 1px solid var(--line);
   background: #f9faf8;
@@ -220,6 +225,14 @@ a:focus-visible {
 
 .muted {
   color: var(--muted);
+  line-height: 1.6;
+}
+
+.warning-text {
+  border-left: 4px solid #b45309;
+  padding-left: 10px;
+  color: #8a3b0b;
+  font-size: 0.92rem;
   line-height: 1.6;
 }
 

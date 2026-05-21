@@ -36,6 +36,11 @@ const LINE_COLORS = {
   provincial: "#2d7dd2"
 };
 
+const INTERPOLATION_GAP_LIMITS = {
+  high: 1,
+  medium: 3
+};
+
 const state = {
   category: "freeway",
   data: SAMPLE_MILEPOSTS,
@@ -56,11 +61,12 @@ const vectorLayer = new ol.layer.Vector({
   source: vectorSource,
   style: feature => {
     if (!feature.get("isSearchResult")) return null;
-    const category = feature.get("category");
+    const confidence = feature.get("confidence");
+    const color = confidence === "low" ? "#b45309" : "#172026";
     return new ol.style.Style({
       image: new ol.style.Circle({
         radius: 8,
-        fill: new ol.style.Fill({ color: "#172026" }),
+        fill: new ol.style.Fill({ color }),
         stroke: new ol.style.Stroke({ color: "#ffffff", width: 2 })
       })
     });
@@ -217,7 +223,7 @@ function refreshMap() {
   }));
 }
 
-function locate() {
+async function locate() {
   const route = routeSelect.value;
   const direction = directionSelect.value;
   const km = parseMileageInput(kmInput.value);
@@ -232,7 +238,13 @@ function locate() {
     return;
   }
 
-  const match = resolveMilepost(pool, km);
+  locateButton.disabled = true;
+  const originalLabel = locateButton.textContent;
+  locateButton.textContent = "定位中";
+  const match = await resolveMilepost(pool, km).finally(() => {
+    locateButton.disabled = false;
+    locateButton.textContent = originalLabel;
+  });
 
   if (!match) {
     renderNoResult(route, direction);
@@ -251,7 +263,7 @@ function locate() {
   renderPopup(match.feature, lonLat);
 }
 
-function resolveMilepost(pool, km) {
+async function resolveMilepost(pool, km) {
   const sorted = pool
     .filter(feature => Number.isFinite(feature.properties.km) && Array.isArray(feature.geometry.coordinates))
     .slice()
@@ -264,7 +276,9 @@ function resolveMilepost(pool, km) {
     return {
       feature: cloneFeature(exact, {
         matchType: "direct",
-        requestedKm: km
+        requestedKm: km,
+        confidence: "high",
+        interpolationMethod: "milepost"
       }),
       diff: 0
     };
@@ -284,13 +298,29 @@ function resolveMilepost(pool, km) {
   if (lower && upper && Number(upper.properties.km) !== Number(lower.properties.km)) {
     const lowerKm = Number(lower.properties.km);
     const upperKm = Number(upper.properties.km);
+    const gapKm = upperKm - lowerKm;
     const ratio = (km - lowerKm) / (upperKm - lowerKm);
     const lowerCoord = lower.geometry.coordinates;
     const upperCoord = upper.geometry.coordinates;
-    const interpolatedCoord = [
+    let interpolatedCoord = [
       lowerCoord[0] + (upperCoord[0] - lowerCoord[0]) * ratio,
       lowerCoord[1] + (upperCoord[1] - lowerCoord[1]) * ratio
     ];
+    const confidence = interpolationConfidence(gapKm);
+    let interpolationMethod = "linear";
+    let roadDistanceKm = null;
+    let roadGeometryStatus = "";
+
+    if (gapKm > INTERPOLATION_GAP_LIMITS.high) {
+      const roadMatch = await interpolateAlongRoad(lowerCoord, upperCoord, ratio, gapKm);
+      if (roadMatch) {
+        interpolatedCoord = roadMatch.coordinate;
+        interpolationMethod = "road";
+        roadDistanceKm = roadMatch.distanceKm;
+      } else {
+        roadGeometryStatus = "無法取得道路線形，已退回兩點直線估算";
+      }
+    }
 
     return {
       feature: {
@@ -302,7 +332,12 @@ function resolveMilepost(pool, km) {
           matchType: "interpolated",
           requestedKm: km,
           lowerKm,
-          upperKm
+          upperKm,
+          gapKm,
+          confidence,
+          interpolationMethod,
+          roadDistanceKm,
+          roadGeometryStatus
         },
         geometry: {
           type: "Point",
@@ -321,10 +356,82 @@ function resolveMilepost(pool, km) {
   return {
     feature: cloneFeature(nearest.feature, {
       matchType: "nearest",
-      requestedKm: km
+      requestedKm: km,
+      confidence: "low",
+      interpolationMethod: "nearest"
     }),
     diff: nearest.diff
   };
+}
+
+function interpolationConfidence(gapKm) {
+  if (gapKm <= INTERPOLATION_GAP_LIMITS.high) return "high";
+  if (gapKm <= INTERPOLATION_GAP_LIMITS.medium) return "medium";
+  return "low";
+}
+
+async function interpolateAlongRoad(startCoord, endCoord, ratio, expectedGapKm) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 4500);
+  try {
+    const query = `${startCoord[0]},${startCoord[1]};${endCoord[0]},${endCoord[1]}`;
+    const url = `https://router.project-osrm.org/route/v1/driving/${query}?overview=full&geometries=geojson&alternatives=false&steps=false`;
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const route = payload.routes?.[0];
+    const coordinates = route?.geometry?.coordinates;
+    if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
+    const distanceKm = Number(route.distance) / 1000;
+    if (!Number.isFinite(distanceKm) || distanceKm > expectedGapKm * 4 + 5) return null;
+    return {
+      coordinate: interpolateAlongCoordinates(coordinates, ratio),
+      distanceKm
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function interpolateAlongCoordinates(coordinates, ratio) {
+  const segments = [];
+  let total = 0;
+  for (let index = 0; index < coordinates.length - 1; index += 1) {
+    const start = coordinates[index];
+    const end = coordinates[index + 1];
+    const length = haversineKm(start, end);
+    segments.push({ start, end, length });
+    total += length;
+  }
+
+  if (!total) return coordinates[0];
+
+  let remaining = total * ratio;
+  for (const segment of segments) {
+    if (remaining <= segment.length) {
+      const segmentRatio = segment.length ? remaining / segment.length : 0;
+      return [
+        segment.start[0] + (segment.end[0] - segment.start[0]) * segmentRatio,
+        segment.start[1] + (segment.end[1] - segment.start[1]) * segmentRatio
+      ];
+    }
+    remaining -= segment.length;
+  }
+
+  return coordinates[coordinates.length - 1];
+}
+
+function haversineKm(start, end) {
+  const radiusKm = 6371;
+  const toRad = value => value * Math.PI / 180;
+  const dLat = toRad(end[1] - start[1]);
+  const dLon = toRad(end[0] - start[0]);
+  const lat1 = toRad(start[1]);
+  const lat2 = toRad(end[1]);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * radiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function cloneFeature(feature, extraProperties = {}) {
@@ -374,11 +481,40 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl) {
     interpolated: "內插估算",
     nearest: "最近里程點"
   };
+  const confidenceLabels = {
+    high: "高",
+    medium: "中",
+    low: "低"
+  };
+  const methodLabels = {
+    milepost: "原始里程點",
+    linear: "兩點直線估算",
+    road: "沿道路線形估算",
+    nearest: "最近里程點"
+  };
   const intervalRow = properties.matchType === "interpolated"
     ? `<span>估算區間</span><strong>${formatKm(properties.lowerKm)} - ${formatKm(properties.upperKm)}</strong>`
     : "";
+  const gapRow = properties.matchType === "interpolated"
+    ? `<span>相鄰樁距</span><strong>${properties.gapKm.toFixed(1)} km</strong>`
+    : "";
+  const confidenceRow = properties.confidence
+    ? `<span>可信度</span><strong>${confidenceLabels[properties.confidence] || properties.confidence}</strong>`
+    : "";
+  const methodRow = properties.interpolationMethod
+    ? `<span>估算方式</span><strong>${methodLabels[properties.interpolationMethod] || properties.interpolationMethod}</strong>`
+    : "";
+  const roadDistanceRow = properties.interpolationMethod === "road" && Number.isFinite(properties.roadDistanceKm)
+    ? `<span>路網距離</span><strong>${properties.roadDistanceKm.toFixed(1)} km</strong>`
+    : "";
   const diffRow = properties.matchType === "nearest"
     ? `<span>差距</span><strong>${diff.toFixed(2)} km</strong>`
+    : "";
+  const warning = properties.confidence === "low"
+    ? `<p class="warning-text">此區間里程點過少，位置僅供初步判讀；請搭配 Street View 或現場道路特徵確認。</p>`
+    : "";
+  const roadFallback = properties.roadGeometryStatus
+    ? `<p class="warning-text">${properties.roadGeometryStatus}。</p>`
     : "";
 
   resultCard.innerHTML = `
@@ -387,10 +523,16 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl) {
       <span>座標</span><strong>${lat.toFixed(6)}, ${lon.toFixed(6)}</strong>
       <span>定位方式</span><strong>${modeLabels[properties.matchType] || "里程點資料"}</strong>
       ${intervalRow}
+      ${gapRow}
+      ${confidenceRow}
+      ${methodRow}
+      ${roadDistanceRow}
       ${diffRow}
       <span>來源</span><strong>${properties.label || "里程點資料"}</strong>
     </div>
-    <p class="muted">Street View 會開啟 Google Maps 全景檢視；正式嵌入頁面需要 Google Maps API key。</p>
+    ${warning}
+    ${roadFallback}
+    <p class="muted">Street View 會開啟 Google Maps 全景檢視 URL。</p>
   `;
 }
 
@@ -405,9 +547,10 @@ function renderNoResult(route, direction) {
 
 function renderPopup(feature, [lon, lat]) {
   const suffix = feature.properties.matchType === "interpolated" ? "（內插估算）" : "";
+  const confidence = feature.properties.confidence === "low" ? "<br>資料稀疏，低可信度" : "";
   popupElement.innerHTML = `
     <h3>${feature.properties.route} ${formatKm(feature.properties.km)}${suffix}</h3>
-    <p>${DIRECTIONS[feature.properties.direction] || feature.properties.direction}<br>${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
+    <p>${DIRECTIONS[feature.properties.direction] || feature.properties.direction}${confidence}<br>${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
   `;
   popup.setPosition(ol.proj.fromLonLat([lon, lat]));
 }
