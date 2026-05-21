@@ -84,7 +84,7 @@ def parse_km(value):
 
 def normalize_direction(value, route=""):
     text = str(value or "").strip()
-    if text in {"雙向", "雙", "M", ""}:
+    if text in {"雙向", "雙", "M", "", "順向", "逆向"}:
         return default_directions(route)
     mapped = DIRECTION_MAP.get(text, text.lower() or "")
     return [mapped] if mapped else default_directions(route)

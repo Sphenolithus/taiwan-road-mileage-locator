@@ -41,6 +41,20 @@ const INTERPOLATION_GAP_LIMITS = {
   medium: 3
 };
 
+const DEFAULT_ROUTE_DIRECTIONS = {
+  "台20線": ["east", "west"],
+  "台62線": ["east", "west"],
+  "台64線": ["east", "west"],
+  "台66線": ["east", "west"],
+  "台68線": ["east", "west"],
+  "台72線": ["east", "west"],
+  "台78線": ["east", "west"],
+  "台82線": ["east", "west"],
+  "台84線": ["east", "west"],
+  "台86線": ["east", "west"],
+  "台88線": ["east", "west"]
+};
+
 const state = {
   category: "freeway",
   data: SAMPLE_MILEPOSTS,
@@ -108,12 +122,14 @@ function point(category, route, direction, km, lat, lon, label) {
 function normalizeFeature(rawFeature) {
   const props = rawFeature.properties || {};
   const coords = rawFeature.geometry?.coordinates;
-  return {
+  const route = props.route || props.road || props.roadName || "";
+  const directions = normalizeDirections(props.direction || props.dir || "", route);
+  return directions.map(direction => ({
     type: "Feature",
     properties: {
-      category: props.category || inferCategory(props.route || props.road || props.roadName),
-      route: props.route || props.road || props.roadName || "",
-      direction: normalizeDirection(props.direction || props.dir || ""),
+      category: props.category || inferCategory(route),
+      route,
+      direction,
       km: Number(props.km ?? props.mileage ?? props.mile),
       label: props.label || props.name || ""
     },
@@ -121,16 +137,33 @@ function normalizeFeature(rawFeature) {
       type: "Point",
       coordinates: coords
     }
-  };
+  }));
 }
 
-function normalizeDirection(value) {
+function normalizeDirections(value, route = "") {
   const text = String(value).trim().toLowerCase();
-  if (["south", "s", "南", "南下"].includes(text)) return "south";
-  if (["north", "n", "北", "北上"].includes(text)) return "north";
-  if (["east", "e", "東", "東向", "東行"].includes(text)) return "east";
-  if (["west", "w", "西", "西向", "西行"].includes(text)) return "west";
-  return text || "south";
+  if (["south", "s", "南", "南下"].includes(text)) return ["south"];
+  if (["north", "n", "北", "北上"].includes(text)) return ["north"];
+  if (["east", "e", "東", "東向", "東行"].includes(text)) return ["east"];
+  if (["west", "w", "西", "西向", "西行"].includes(text)) return ["west"];
+  if (["雙向", "雙", "m", "順向", "逆向", ""].includes(text)) return defaultDirections(route);
+  return defaultDirections(route);
+}
+
+function defaultDirections(route) {
+  return DEFAULT_ROUTE_DIRECTIONS[route] || ["north", "south"];
+}
+
+function dedupeFeatures(features) {
+  const seen = new Set();
+  return features.filter(feature => {
+    const [lon, lat] = feature.geometry.coordinates;
+    const props = feature.properties;
+    const key = [props.route, props.direction, props.km, lon, lat].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function inferCategory(route = "") {
@@ -144,7 +177,7 @@ async function loadData() {
     const geojson = await fetchOfficialMileposts();
     state.data = {
       type: "FeatureCollection",
-      features: geojson.features.map(normalizeFeature).filter(isValidFeature)
+      features: dedupeFeatures(geojson.features.flatMap(normalizeFeature).filter(isValidFeature))
     };
     dataStatus.textContent = `已載入正式資料：${state.data.features.length.toLocaleString()} 筆里程點。`;
   } catch {
