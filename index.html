@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台灣主要道路里程定位</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260618-nearby-cctv" />
+    <link rel="stylesheet" href="./styles.css?v=20260618-snapshots-map-candidates" />
   </head>
   <body>
     <main class="app-shell">
@@ -68,7 +68,21 @@
       </section>
     </main>
 
+    <div id="cameraDialog" class="camera-dialog" hidden>
+      <div class="camera-dialog__backdrop" data-close-camera-dialog></div>
+      <div class="camera-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="cameraDialogTitle">
+        <button class="camera-dialog__close" type="button" aria-label="關閉" data-close-camera-dialog>×</button>
+        <img id="cameraDialogImage" alt="" />
+        <h2 id="cameraDialogTitle"></h2>
+        <p id="cameraDialogMeta"></p>
+        <div class="camera-dialog__actions">
+          <a id="cameraDialogStream" class="camera-link" target="_blank" rel="noreferrer">開啟影像</a>
+          <a id="cameraDialogSnapshot" class="text-link" target="_blank" rel="noreferrer">開啟快照</a>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
-    <script src="./app.js?v=20260618-cctv-assisted-interpolation"></script>
+    <script src="./app.js?v=20260618-snapshots-map-candidates"></script>
   </body>
 </html>

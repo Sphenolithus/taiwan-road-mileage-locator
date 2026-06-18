@@ -64,7 +64,9 @@ const state = {
   cctvs: [],
   cctvMetadata: null,
   nearbyCctvs: [],
-  selectedFeature: null
+  selectedFeature: null,
+  mapQueryFeature: null,
+  mapCandidates: []
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -75,6 +77,13 @@ const dataStatus = document.querySelector("#dataStatus");
 const streetViewButton = document.querySelector("#streetViewButton");
 const locateButton = document.querySelector("#locateButton");
 const segments = Array.from(document.querySelectorAll(".segment"));
+const cameraDialog = document.querySelector("#cameraDialog");
+const cameraDialogImage = document.querySelector("#cameraDialogImage");
+const cameraDialogTitle = document.querySelector("#cameraDialogTitle");
+const cameraDialogMeta = document.querySelector("#cameraDialogMeta");
+const cameraDialogStream = document.querySelector("#cameraDialogStream");
+const cameraDialogSnapshot = document.querySelector("#cameraDialogSnapshot");
+const cameraDialogCloseButtons = Array.from(document.querySelectorAll("[data-close-camera-dialog]"));
 
 const vectorSource = new ol.source.Vector();
 const vectorLayer = new ol.layer.Vector({
@@ -94,6 +103,15 @@ const vectorLayer = new ol.layer.Vector({
           font: "700 10px Arial, sans-serif",
           fill: new ol.style.Fill({ color: "#ffffff" }),
           offsetY: 1
+        })
+      });
+    }
+    if (feature.get("isMapQuery")) {
+      return new ol.style.Style({
+        image: new ol.style.Circle({
+          radius: 7,
+          fill: new ol.style.Fill({ color: "#ffffff" }),
+          stroke: new ol.style.Stroke({ color: "#0d6b5d", width: 3 })
         })
       });
     }
@@ -123,6 +141,72 @@ const map = new ol.Map({
     zoom: 7.5
   })
 });
+const cctvSnapshotOverlays = [];
+
+function clearCctvSnapshotOverlays() {
+  cctvSnapshotOverlays.splice(0).forEach(overlay => map.removeOverlay(overlay));
+}
+
+function renderCctvSnapshotOverlays(items) {
+  clearCctvSnapshotOverlays();
+  items.forEach((item, index) => {
+    const { camera, distanceKm } = item;
+    const props = camera.properties;
+    if (!props.imageUrl) return;
+    const title = cameraTitle(props);
+    const element = document.createElement("button");
+    element.type = "button";
+    element.className = "cctv-map-snapshot";
+    element.setAttribute("aria-label", `開啟 ${title} 影像`);
+    element.innerHTML = `
+      <span>${index + 1}</span>
+      <img src="${escapeHtml(props.imageUrl)}" alt="${escapeHtml(title)} 快照" loading="lazy" />
+    `;
+    element.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCameraDialog(camera, distanceKm);
+    });
+    element.querySelector("img").addEventListener("error", () => element.classList.add("is-broken"));
+
+    const overlay = new ol.Overlay({
+      element,
+      positioning: "bottom-center",
+      stopEvent: true,
+      offset: [0, -16]
+    });
+    overlay.setPosition(ol.proj.fromLonLat(camera.geometry.coordinates));
+    map.addOverlay(overlay);
+    cctvSnapshotOverlays.push(overlay);
+  });
+}
+
+function cameraTitle(props) {
+  const direction = DIRECTIONS[props.direction] || props.direction || "";
+  return [props.route, direction, props.mile].filter(Boolean).join(" ") || "交通攝影機";
+}
+
+function openCameraDialog(camera, distanceKm) {
+  const props = camera.properties;
+  const title = cameraTitle(props);
+  const streamUrl = props.streamUrl || props.imageUrl;
+  cameraDialogImage.src = props.imageUrl || streamUrl || "";
+  cameraDialogImage.alt = `${title} 快照`;
+  cameraDialogTitle.textContent = title;
+  cameraDialogMeta.textContent = [
+    props.description || props.id || "交通部 CCTV",
+    Number.isFinite(distanceKm) ? `距定位點 ${formatDistance(distanceKm)}` : "",
+    props.source || ""
+  ].filter(Boolean).join(" · ");
+  cameraDialogStream.href = streamUrl || "#";
+  cameraDialogSnapshot.href = props.imageUrl || streamUrl || "#";
+  cameraDialog.hidden = false;
+}
+
+function closeCameraDialog() {
+  cameraDialog.hidden = true;
+  cameraDialogImage.removeAttribute("src");
+}
 
 function point(category, route, direction, km, lat, lon, label) {
   return {
@@ -216,7 +300,10 @@ async function loadData() {
 function markPending() {
   state.selectedFeature = null;
   state.nearbyCctvs = [];
+  state.mapQueryFeature = null;
+  state.mapCandidates = [];
   vectorSource.clear();
+  clearCctvSnapshotOverlays();
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
   resultCard.innerHTML = `<p class="muted">請確認道路、方向與里程，按「定位」後地圖才會跳轉。</p>`;
@@ -334,11 +421,18 @@ function refreshDirectionOptions() {
 
 function refreshMap() {
   vectorSource.clear();
+  renderCctvSnapshotOverlays(state.nearbyCctvs);
   if (state.selectedFeature) {
     vectorSource.addFeature(new ol.Feature({
       geometry: new ol.geom.Point(ol.proj.fromLonLat(state.selectedFeature.geometry.coordinates)),
       isSearchResult: true,
       ...state.selectedFeature.properties
+    }));
+  }
+  if (state.mapQueryFeature) {
+    vectorSource.addFeature(new ol.Feature({
+      geometry: new ol.geom.Point(ol.proj.fromLonLat(state.mapQueryFeature.geometry.coordinates)),
+      isMapQuery: true
     }));
   }
 
@@ -461,6 +555,8 @@ async function locate() {
 
   state.selectedFeature = match.feature;
   state.nearbyCctvs = nearbyCctvs;
+  state.mapQueryFeature = null;
+  state.mapCandidates = [];
   refreshMap();
 
   streetViewButton.href = streetViewUrl;
@@ -702,9 +798,153 @@ function nearestCctvs(coord, limit = 3) {
     .slice(0, limit);
 }
 
+function allControlPoints() {
+  const cctvPoints = state.cctvs
+    .filter(camera => Number.isFinite(camera.properties.km) && Array.isArray(camera.geometry.coordinates))
+    .map(camera => {
+      const props = camera.properties;
+      return {
+        type: "Feature",
+        properties: {
+          category: inferCategory(props.route),
+          route: props.route,
+          direction: props.direction,
+          km: props.km,
+          label: `${cameraTitle(props)} CCTV`,
+          sourceType: "cctv"
+        },
+        geometry: {
+          type: "Point",
+          coordinates: camera.geometry.coordinates
+        }
+      };
+    });
+  return mergeControlPoints(state.data.features, cctvPoints);
+}
+
+function mapClickCandidates(coord, limit = 5) {
+  const clickPoint = ol.proj.fromLonLat(coord);
+  const groups = new Map();
+
+  allControlPoints()
+    .filter(feature => {
+      const props = feature.properties;
+      return props.route && props.direction && Number.isFinite(props.km) && Array.isArray(feature.geometry.coordinates);
+    })
+    .forEach(feature => {
+      const props = feature.properties;
+      const key = `${props.route}|${props.direction}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(feature);
+    });
+
+  const candidates = Array.from(groups.values())
+    .map(features => nearestRouteCandidate(features, clickPoint))
+    .filter(Boolean)
+    .sort((left, right) => left.distanceMeters - right.distanceMeters)
+    .slice(0, limit);
+
+  return candidates.map(candidate => {
+    const { route, direction } = candidate.properties;
+    return {
+      ...candidate,
+      properties: {
+        ...candidate.properties,
+        category: inferCategory(route),
+        label: `${route} ${DIRECTIONS[direction] || direction} ${formatKm(candidate.properties.km)} 地圖點選候選`,
+        matchType: "mapCandidate",
+        confidence: candidate.distanceMeters <= 100 ? "high" : candidate.distanceMeters <= 500 ? "medium" : "low",
+        interpolationMethod: "map-click",
+        mapDistanceMeters: candidate.distanceMeters
+      }
+    };
+  });
+}
+
+function nearestRouteCandidate(features, clickPoint) {
+  const sorted = features
+    .slice()
+    .sort((left, right) => Number(left.properties.km) - Number(right.properties.km));
+  let best = null;
+
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const start = sorted[index];
+    const end = sorted[index + 1];
+    if (Number(start.properties.km) === Number(end.properties.km)) continue;
+    const startPoint = ol.proj.fromLonLat(start.geometry.coordinates);
+    const endPoint = ol.proj.fromLonLat(end.geometry.coordinates);
+    const projection = projectToSegment(clickPoint, startPoint, endPoint);
+    const km = Number(start.properties.km) + (Number(end.properties.km) - Number(start.properties.km)) * projection.ratio;
+    const candidate = {
+      type: "Feature",
+      properties: {
+        route: start.properties.route,
+        direction: start.properties.direction,
+        km,
+        lowerKm: Number(start.properties.km),
+        upperKm: Number(end.properties.km)
+      },
+      geometry: {
+        type: "Point",
+        coordinates: ol.proj.toLonLat(projection.point)
+      },
+      distanceMeters: projection.distanceMeters
+    };
+    if (!best || candidate.distanceMeters < best.distanceMeters) best = candidate;
+  }
+
+  if (best) return best;
+
+  const nearest = sorted.reduce((current, feature) => {
+    const point = ol.proj.fromLonLat(feature.geometry.coordinates);
+    const distanceMeters = distance2d(clickPoint, point);
+    return !current || distanceMeters < current.distanceMeters
+      ? { feature, distanceMeters }
+      : current;
+  }, null);
+  if (!nearest) return null;
+
+  return {
+    type: "Feature",
+    properties: {
+      route: nearest.feature.properties.route,
+      direction: nearest.feature.properties.direction,
+      km: Number(nearest.feature.properties.km)
+    },
+    geometry: {
+      type: "Point",
+      coordinates: [...nearest.feature.geometry.coordinates]
+    },
+    distanceMeters: nearest.distanceMeters
+  };
+}
+
+function projectToSegment(point, start, end) {
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const lengthSquared = dx * dx + dy * dy;
+  const rawRatio = lengthSquared ? ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared : 0;
+  const ratio = Math.min(1, Math.max(0, rawRatio));
+  const projectedPoint = [start[0] + dx * ratio, start[1] + dy * ratio];
+  return {
+    point: projectedPoint,
+    ratio,
+    distanceMeters: distance2d(point, projectedPoint)
+  };
+}
+
+function distance2d(start, end) {
+  return Math.hypot(end[0] - start[0], end[1] - start[1]);
+}
+
 function formatDistance(km) {
   if (!Number.isFinite(km)) return "";
   return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(2)} km`;
+}
+
+function formatMeters(meters) {
+  if (!Number.isFinite(meters)) return "";
+  return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(2)} km`;
 }
 
 function escapeHtml(value) {
@@ -838,17 +1078,20 @@ function renderCctvList(items) {
     return `<div class="cctv-panel"><h3>鄰近攝影機</h3><p class="muted">附近找不到可用攝影機。</p></div>`;
   }
 
-  const cards = items.map(({ camera, distanceKm }) => {
+  const cards = items.map(({ camera, distanceKm }, index) => {
     const props = camera.properties;
-    const direction = DIRECTIONS[props.direction] || props.direction || "";
-    const title = [props.route, direction, props.mile].filter(Boolean).join(" ");
+    const title = cameraTitle(props);
     const description = props.description || props.id || "交通部 CCTV";
     const streamUrl = props.streamUrl || props.imageUrl;
+    const imagePreview = props.imageUrl
+      ? `<button class="cctv-thumb" type="button" data-camera-index="${index}" aria-label="預覽 ${escapeHtml(title)} 快照"><img src="${escapeHtml(props.imageUrl)}" alt="${escapeHtml(title)} 快照" loading="lazy" /></button>`
+      : "";
     const imageLink = props.imageUrl && props.imageUrl !== streamUrl
       ? `<a class="text-link" href="${escapeHtml(props.imageUrl)}" target="_blank" rel="noreferrer">快照</a>`
       : "";
     return `
       <li class="cctv-item">
+        ${imagePreview}
         <div>
           <strong>${escapeHtml(title || "交通攝影機")}</strong>
           <span>${escapeHtml(description)}</span>
@@ -871,10 +1114,71 @@ function renderCctvList(items) {
   `;
 }
 
+function renderMapCandidates(candidates, clickCoord) {
+  state.selectedFeature = null;
+  state.nearbyCctvs = [];
+  state.mapCandidates = candidates;
+  state.mapQueryFeature = {
+    type: "Feature",
+    properties: {},
+    geometry: {
+      type: "Point",
+      coordinates: clickCoord
+    }
+  };
+  refreshMap();
+
+  if (!candidates.length) {
+    resultCard.innerHTML = `<p class="muted">此處附近找不到可用的里程候選。請放大後靠近主要道路再點一次。</p>`;
+    return;
+  }
+
+  const items = candidates.map((candidate, index) => {
+    const props = candidate.properties;
+    const direction = DIRECTIONS[props.direction] || props.direction || "";
+    const interval = Number.isFinite(props.lowerKm) && Number.isFinite(props.upperKm)
+      ? `<small>估算區間 ${formatKm(props.lowerKm)} - ${formatKm(props.upperKm)}</small>`
+      : "";
+    return `
+      <li class="map-candidate-item">
+        <button type="button" data-map-candidate-index="${index}">
+          <strong>${escapeHtml(props.route)} ${escapeHtml(direction)} ${formatKm(props.km)}</strong>
+          <span>距點選位置約 ${formatMeters(props.mapDistanceMeters)}</span>
+          ${interval}
+        </button>
+      </li>
+    `;
+  }).join("");
+
+  resultCard.innerHTML = `
+    <div class="result-title">地圖點選候選</div>
+    <p class="muted">候選值是依附近里程點與 CCTV 控制點估算；請選擇最符合實際道路的一筆再定位。</p>
+    <ol class="map-candidate-list">${items}</ol>
+  `;
+}
+
+function applyMapCandidate(index) {
+  const candidate = state.mapCandidates[index];
+  if (!candidate) return;
+  const props = candidate.properties;
+  const category = props.category || inferCategory(props.route);
+  state.category = category;
+  segments.forEach(item => item.classList.toggle("is-active", item.dataset.category === category));
+  refreshRouteOptions();
+  routeSelect.value = props.route;
+  refreshDirectionOptions();
+  directionSelect.value = props.direction;
+  kmInput.value = formatKm(props.km);
+  locate();
+}
+
 function renderNoResult(route, direction) {
   state.selectedFeature = null;
   state.nearbyCctvs = [];
+  state.mapQueryFeature = null;
+  state.mapCandidates = [];
   vectorSource.clear();
+  clearCctvSnapshotOverlays();
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
   resultCard.innerHTML = `<p class="muted">找不到 ${route || "此路線"} ${DIRECTIONS[direction] || direction || ""} 的里程資料。請先匯入官方里程點。</p>`;
@@ -909,9 +1213,38 @@ kmInput.addEventListener("keydown", event => {
 });
 locateButton.addEventListener("click", locate);
 
+resultCard.addEventListener("click", event => {
+  const cameraButton = event.target.closest("[data-camera-index]");
+  if (cameraButton) {
+    const item = state.nearbyCctvs[Number(cameraButton.dataset.cameraIndex)];
+    if (item) openCameraDialog(item.camera, item.distanceKm);
+    return;
+  }
+
+  const candidateButton = event.target.closest("[data-map-candidate-index]");
+  if (candidateButton) {
+    applyMapCandidate(Number(candidateButton.dataset.mapCandidateIndex));
+  }
+});
+
+cameraDialogCloseButtons.forEach(button => button.addEventListener("click", closeCameraDialog));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !cameraDialog.hidden) closeCameraDialog();
+});
+
 map.on("click", event => {
   const feature = map.forEachFeatureAtPixel(event.pixel, item => item);
-  if (!feature || feature.get("isCctvMarker")) return;
+  if (feature?.get("isCctvMarker")) {
+    const item = state.nearbyCctvs.find(({ camera }) => camera.properties.id === feature.get("cctvId"));
+    if (item) openCameraDialog(item.camera, item.distanceKm);
+    return;
+  }
+  if (!feature) {
+    const clickCoord = ol.proj.toLonLat(event.coordinate);
+    renderMapCandidates(mapClickCandidates(clickCoord, 5), clickCoord);
+    return;
+  }
+  if (!feature.get("route")) return;
   routeSelect.value = feature.get("route");
   refreshDirectionOptions();
   directionSelect.value = feature.get("direction");
