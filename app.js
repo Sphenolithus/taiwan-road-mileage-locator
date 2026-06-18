@@ -171,14 +171,55 @@ function renderCctvSnapshotOverlays(items) {
 
     const overlay = new ol.Overlay({
       element,
-      positioning: "bottom-center",
+      positioning: cctvSnapshotPositioning(camera.geometry.coordinates, index),
       stopEvent: true,
-      offset: [0, -16]
+      offset: cctvSnapshotOffset(camera.geometry.coordinates, index)
     });
     overlay.setPosition(ol.proj.fromLonLat(camera.geometry.coordinates));
     map.addOverlay(overlay);
     cctvSnapshotOverlays.push(overlay);
   });
+}
+
+function cctvSnapshotPositioning(cameraCoord, index) {
+  return cctvSnapshotShouldAvoidTarget(cameraCoord, index) ? "center-center" : "bottom-center";
+}
+
+function cctvSnapshotOffset(cameraCoord, index) {
+  const fallbackOffsets = [
+    [0, -16],
+    [18, -22],
+    [-18, -22]
+  ];
+  const selectedCoord = state.selectedFeature?.geometry?.coordinates;
+  if (!selectedCoord || typeof map.getPixelFromCoordinate !== "function") {
+    return fallbackOffsets[index] || fallbackOffsets[0];
+  }
+
+  const cameraPixel = map.getPixelFromCoordinate(ol.proj.fromLonLat(cameraCoord));
+  const targetPixel = map.getPixelFromCoordinate(ol.proj.fromLonLat(selectedCoord));
+  if (!cameraPixel || !targetPixel) return fallbackOffsets[index] || fallbackOffsets[0];
+
+  const dx = cameraPixel[0] - targetPixel[0];
+  const dy = cameraPixel[1] - targetPixel[1];
+  const distance = Math.hypot(dx, dy);
+  if (distance > 170) return fallbackOffsets[index] || fallbackOffsets[0];
+
+  const closeOffsets = [
+    [104, -72],
+    [-104, -72],
+    [0, -132]
+  ];
+  if (distance < 8) return closeOffsets[index] || closeOffsets[0];
+
+  const horizontal = dx >= 0 ? 104 : -104;
+  const vertical = dy >= 0 ? 74 : -74;
+  return [horizontal, vertical];
+}
+
+function cctvSnapshotShouldAvoidTarget(cameraCoord, index) {
+  const offset = cctvSnapshotOffset(cameraCoord, index);
+  return Math.abs(offset[0]) > 50 || Math.abs(offset[1]) > 50;
 }
 
 function cameraTitle(props) {
