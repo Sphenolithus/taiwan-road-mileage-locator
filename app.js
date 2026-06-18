@@ -61,6 +61,8 @@ const DEFAULT_ROUTE_DIRECTIONS = {
 const state = {
   category: "freeway",
   data: SAMPLE_MILEPOSTS,
+  cctvs: [],
+  cctvMetadata: null,
   selectedFeature: null
 };
 
@@ -166,16 +168,29 @@ function inferCategory(route = "") {
 }
 
 async function loadData() {
+  let milepostMessage = "";
+  let cctvMessage = "";
   try {
     const geojson = await fetchOfficialMileposts();
     state.data = {
       type: "FeatureCollection",
       features: dedupeFeatures(geojson.features.flatMap(normalizeFeature).filter(isValidFeature))
     };
-    dataStatus.textContent = `已載入正式資料：${state.data.features.length.toLocaleString()} 筆里程點。`;
+    milepostMessage = `已載入正式資料：${state.data.features.length.toLocaleString()} 筆里程點。`;
   } catch {
-    dataStatus.textContent = `目前使用內建示範資料：${SAMPLE_MILEPOSTS.features.length} 筆。正式資料載入失敗時會自動退回示範資料。`;
+    milepostMessage = `目前使用內建示範資料：${SAMPLE_MILEPOSTS.features.length} 筆。正式資料載入失敗時會自動退回示範資料。`;
   }
+
+  try {
+    const cctvGeojson = await fetchOfficialCctvs();
+    state.cctvs = cctvGeojson.features.map(normalizeCctvFeature).filter(isValidCctv);
+    state.cctvMetadata = cctvGeojson.metadata || null;
+    cctvMessage = `已載入 ${state.cctvs.length.toLocaleString()} 支 CCTV。`;
+  } catch {
+    state.cctvs = [];
+    cctvMessage = "CCTV 資料載入失敗，定位仍可使用。";
+  }
+  dataStatus.textContent = `${milepostMessage} ${cctvMessage}`;
   refreshRouteOptions();
   markPending();
 }
@@ -220,6 +235,57 @@ function refreshRouteOptions() {
     .sort((left, right) => routeSortKey(left).localeCompare(routeSortKey(right), "zh-Hant", { numeric: true }));
   routeSelect.innerHTML = routes.map(route => `<option value="${route}">${route}</option>`).join("");
   refreshDirectionOptions();
+}
+
+async function fetchOfficialCctvs() {
+  const packedResponse = await fetch("./data/cctv.geojson.gz.b64", { cache: "no-store" });
+  if (packedResponse.ok && "DecompressionStream" in window) {
+    const encoded = (await packedResponse.text()).trim();
+    const binary = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+    const stream = new Blob([binary]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Response(stream).json();
+  }
+
+  const response = await fetch("./data/cctv.geojson", { cache: "no-store" });
+  if (!response.ok) throw new Error("No prepared CCTV data file");
+  return response.json();
+}
+
+function normalizeCctvFeature(rawFeature) {
+  const props = rawFeature.properties || {};
+  return {
+    type: "Feature",
+    properties: {
+      id: props.id || props.CCTVID || "",
+      source: props.source || "",
+      route: props.route || props.RoadName || "",
+      direction: props.direction || normalizeCameraDirection(props.RoadDirection),
+      mile: props.mile || props.LocationMile || "",
+      description: props.description || props.SurveillanceDescription || "",
+      streamUrl: props.streamUrl || props.VideoStreamURL || "",
+      imageUrl: props.imageUrl || props.VideoImageURL || ""
+    },
+    geometry: rawFeature.geometry || {}
+  };
+}
+
+function normalizeCameraDirection(value) {
+  const text = String(value || "").trim().toUpperCase();
+  if (text === "S") return "south";
+  if (text === "N") return "north";
+  if (text === "E") return "east";
+  if (text === "W") return "west";
+  return text.toLowerCase();
+}
+
+function isValidCctv(feature) {
+  return Boolean(
+    Array.isArray(feature.geometry.coordinates) &&
+      feature.geometry.coordinates.length >= 2 &&
+      Number.isFinite(Number(feature.geometry.coordinates[0])) &&
+      Number.isFinite(Number(feature.geometry.coordinates[1])) &&
+      (feature.properties.streamUrl || feature.properties.imageUrl)
+  );
 }
 
 function routeSortKey(route) {
@@ -292,7 +358,8 @@ async function locate() {
   streetViewButton.href = streetViewUrl;
   streetViewButton.classList.remove("is-disabled");
   map.getView().animate({ center: ol.proj.fromLonLat(lonLat), zoom: 15, duration: 350 });
-  renderResult(match.feature, match.diff, lonLat, streetViewUrl);
+  const nearbyCctvs = nearestCctvs(lonLat, 3);
+  renderResult(match.feature, match.diff, lonLat, streetViewUrl, nearbyCctvs);
 }
 
 async function resolveMilepost(pool, km) {
@@ -503,6 +570,31 @@ function haversineKm(start, end) {
   return 2 * radiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function nearestCctvs(coord, limit = 3) {
+  if (!state.cctvs.length) return [];
+  return state.cctvs
+    .map(camera => ({
+      camera,
+      distanceKm: haversineKm(coord, camera.geometry.coordinates)
+    }))
+    .sort((left, right) => left.distanceKm - right.distanceKm)
+    .slice(0, limit);
+}
+
+function formatDistance(km) {
+  if (!Number.isFinite(km)) return "";
+  return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(2)} km`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function cloneFeature(feature, extraProperties = {}) {
   return {
     type: feature.type,
@@ -543,7 +635,7 @@ function makeStreetViewUrl([lon, lat]) {
   return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat.toFixed(7)},${lon.toFixed(7)}`;
 }
 
-function renderResult(feature, diff, [lon, lat], streetViewUrl) {
+function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []) {
   const properties = feature.properties;
   const modeLabels = {
     direct: "原始里程點",
@@ -585,6 +677,7 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl) {
   const roadFallback = properties.roadGeometryStatus
     ? `<p class="warning-text">${properties.roadGeometryStatus}。</p>`
     : "";
+  const cctvList = renderCctvList(nearbyCctvs);
 
   resultCard.innerHTML = `
     <div class="result-title">${properties.route} ${DIRECTIONS[properties.direction] || properties.direction} ${formatKm(properties.km)}</div>
@@ -602,6 +695,47 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl) {
     ${warning}
     ${roadFallback}
     <p class="muted">Street View 會開啟 Google Maps 全景檢視 URL。</p>
+    ${cctvList}
+  `;
+}
+
+function renderCctvList(items) {
+  if (!state.cctvs.length) {
+    return `<div class="cctv-panel"><h3>鄰近攝影機</h3><p class="muted">CCTV 資料尚未載入。</p></div>`;
+  }
+  if (!items.length) {
+    return `<div class="cctv-panel"><h3>鄰近攝影機</h3><p class="muted">附近找不到可用攝影機。</p></div>`;
+  }
+
+  const cards = items.map(({ camera, distanceKm }) => {
+    const props = camera.properties;
+    const direction = DIRECTIONS[props.direction] || props.direction || "";
+    const title = [props.route, direction, props.mile].filter(Boolean).join(" ");
+    const description = props.description || props.id || "交通部 CCTV";
+    const streamUrl = props.streamUrl || props.imageUrl;
+    const imageLink = props.imageUrl && props.imageUrl !== streamUrl
+      ? `<a class="text-link" href="${escapeHtml(props.imageUrl)}" target="_blank" rel="noreferrer">快照</a>`
+      : "";
+    return `
+      <li class="cctv-item">
+        <div>
+          <strong>${escapeHtml(title || "交通攝影機")}</strong>
+          <span>${escapeHtml(description)}</span>
+          <small>${formatDistance(distanceKm)}${props.source ? ` · ${escapeHtml(props.source)}` : ""}</small>
+        </div>
+        <div class="cctv-actions">
+          <a class="camera-link" href="${escapeHtml(streamUrl)}" target="_blank" rel="noreferrer">影像</a>
+          ${imageLink}
+        </div>
+      </li>
+    `;
+  }).join("");
+
+  return `
+    <div class="cctv-panel">
+      <h3>最近 3 支攝影機</h3>
+      <ol class="cctv-list">${cards}</ol>
+    </div>
   `;
 }
 
