@@ -272,6 +272,7 @@ async function fetchOfficialCctvs() {
 
 function normalizeCctvFeature(rawFeature) {
   const props = rawFeature.properties || {};
+  const mile = props.mile || props.LocationMile || "";
   return {
     type: "Feature",
     properties: {
@@ -279,7 +280,8 @@ function normalizeCctvFeature(rawFeature) {
       source: props.source || "",
       route: props.route || props.RoadName || "",
       direction: props.direction || normalizeCameraDirection(props.RoadDirection),
-      mile: props.mile || props.LocationMile || "",
+      mile,
+      km: parseMileageInput(mile),
       description: props.description || props.SurveillanceDescription || "",
       streamUrl: props.streamUrl || props.VideoStreamURL || "",
       imageUrl: props.imageUrl || props.VideoImageURL || ""
@@ -355,6 +357,74 @@ function refreshMap() {
   });
 }
 
+function cctvControlPoints(route, direction) {
+  const byDirection = state.cctvs.filter(camera => {
+    const props = camera.properties;
+    return props.route === route &&
+      props.direction === direction &&
+      Number.isFinite(props.km) &&
+      Array.isArray(camera.geometry.coordinates);
+  });
+  const source = byDirection.length
+    ? byDirection
+    : state.cctvs.filter(camera => {
+      const props = camera.properties;
+      return props.route === route &&
+        Number.isFinite(props.km) &&
+        Array.isArray(camera.geometry.coordinates);
+    });
+
+  return source.map(camera => {
+    const props = camera.properties;
+    return {
+      type: "Feature",
+      properties: {
+        category: inferCategory(props.route),
+        route: props.route,
+        direction: props.direction || direction,
+        km: props.km,
+        label: `${props.route} ${DIRECTIONS[props.direction] || props.direction || ""} ${props.mile} CCTV`,
+        sourceType: "cctv",
+        cctvId: props.id,
+        cctvDescription: props.description,
+        streamUrl: props.streamUrl,
+        imageUrl: props.imageUrl
+      },
+      geometry: {
+        type: "Point",
+        coordinates: camera.geometry.coordinates
+      }
+    };
+  });
+}
+
+function mergeControlPoints(primary, auxiliary) {
+  const seen = new Set();
+  return [...primary, ...auxiliary].filter(feature => {
+    const props = feature.properties;
+    const [lon, lat] = feature.geometry.coordinates;
+    const key = [props.route, props.direction, props.km, lon, lat, props.sourceType || "milepost"].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isCctvControlPoint(feature) {
+  return feature?.properties?.sourceType === "cctv";
+}
+
+function controlPointSource(feature) {
+  return isCctvControlPoint(feature) ? "CCTV" : "里程點";
+}
+
+function controlPointLabel(feature) {
+  const props = feature.properties;
+  const direction = DIRECTIONS[props.direction] || props.direction || "";
+  const source = controlPointSource(feature);
+  return [props.route, direction, formatKm(props.km), source].filter(Boolean).join(" ");
+}
+
 async function locate() {
   const route = routeSelect.value;
   const direction = directionSelect.value;
@@ -363,7 +433,9 @@ async function locate() {
     return feature.properties.route === route && feature.properties.direction === direction;
   });
   const fallbackCandidates = state.data.features.filter(feature => feature.properties.route === route);
-  const pool = candidates.length ? candidates : fallbackCandidates;
+  const milepostPool = candidates.length ? candidates : fallbackCandidates;
+  const auxiliaryPool = cctvControlPoints(route, direction);
+  const pool = mergeControlPoints(milepostPool, auxiliaryPool);
 
   if (!route || !Number.isFinite(km) || !pool.length) {
     renderNoResult(route, direction);
@@ -408,12 +480,16 @@ async function resolveMilepost(pool, km) {
   const exact = sorted.find(feature => Math.abs(Number(feature.properties.km) - km) < 0.0005);
   if (exact) {
     const snapped = await snapToRoad(exact.geometry.coordinates);
+    const usedCctvAux = isCctvControlPoint(exact);
     const feature = cloneFeature(exact, {
       matchType: "direct",
       requestedKm: km,
       confidence: "high",
       interpolationMethod: snapped ? "road" : "milepost",
-      roadGeometryStatus: snapped ? "已貼合道路" : ""
+      roadGeometryStatus: snapped ? "已貼合道路" : "",
+      usedCctvAux,
+      controlPointSource: controlPointSource(exact),
+      controlPointLabel: controlPointLabel(exact)
     });
     if (snapped) feature.geometry.coordinates = snapped.coordinate;
     return {
@@ -440,6 +516,7 @@ async function resolveMilepost(pool, km) {
     const ratio = (km - lowerKm) / (upperKm - lowerKm);
     const lowerCoord = lower.geometry.coordinates;
     const upperCoord = upper.geometry.coordinates;
+    const usedCctvAux = isCctvControlPoint(lower) || isCctvControlPoint(upper);
     let interpolatedCoord = [
       lowerCoord[0] + (upperCoord[0] - lowerCoord[0]) * ratio,
       lowerCoord[1] + (upperCoord[1] - lowerCoord[1]) * ratio
@@ -480,7 +557,12 @@ async function resolveMilepost(pool, km) {
           confidence,
           interpolationMethod,
           roadDistanceKm,
-          roadGeometryStatus
+          roadGeometryStatus,
+          usedCctvAux,
+          lowerSource: controlPointSource(lower),
+          upperSource: controlPointSource(upper),
+          lowerLabel: controlPointLabel(lower),
+          upperLabel: controlPointLabel(upper)
         },
         geometry: {
           type: "Point",
@@ -497,12 +579,16 @@ async function resolveMilepost(pool, km) {
   }, null);
 
   const snapped = await snapToRoad(nearest.feature.geometry.coordinates);
+  const usedCctvAux = isCctvControlPoint(nearest.feature);
   const nearestFeature = cloneFeature(nearest.feature, {
     matchType: "nearest",
     requestedKm: km,
     confidence: "low",
     interpolationMethod: snapped ? "road" : "nearest",
-    roadGeometryStatus: snapped ? "已將最近里程點貼合道路" : ""
+    roadGeometryStatus: snapped ? "已將最近里程點貼合道路" : "",
+    usedCctvAux,
+    controlPointSource: controlPointSource(nearest.feature),
+    controlPointLabel: controlPointLabel(nearest.feature)
   });
   if (snapped) nearestFeature.geometry.coordinates = snapped.coordinate;
 
@@ -703,6 +789,14 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []
   const roadDistanceRow = properties.interpolationMethod === "road" && Number.isFinite(properties.roadDistanceKm)
     ? `<span>路網距離</span><strong>${properties.roadDistanceKm.toFixed(1)} km</strong>`
     : "";
+  const auxiliaryRow = properties.usedCctvAux
+    ? `<span>輔助資料</span><strong>使用 CCTV 里程點</strong>`
+    : "";
+  const controlPointRow = properties.usedCctvAux && properties.matchType === "interpolated" && properties.lowerLabel && properties.upperLabel
+    ? `<span>估算端點</span><strong>${escapeHtml(properties.lowerLabel)} / ${escapeHtml(properties.upperLabel)}</strong>`
+    : properties.usedCctvAux && properties.controlPointLabel
+      ? `<span>控制點</span><strong>${escapeHtml(properties.controlPointLabel)}</strong>`
+      : "";
   const diffRow = properties.matchType === "nearest"
     ? `<span>差距</span><strong>${diff.toFixed(2)} km</strong>`
     : "";
@@ -724,6 +818,8 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []
       ${confidenceRow}
       ${methodRow}
       ${roadDistanceRow}
+      ${auxiliaryRow}
+      ${controlPointRow}
       ${diffRow}
       <span>來源</span><strong>${properties.label || "里程點資料"}</strong>
     </div>
