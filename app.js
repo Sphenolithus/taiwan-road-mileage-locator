@@ -63,6 +63,7 @@ const state = {
   data: SAMPLE_MILEPOSTS,
   cctvs: [],
   cctvMetadata: null,
+  nearbyCctvs: [],
   selectedFeature: null
 };
 
@@ -79,6 +80,23 @@ const vectorSource = new ol.source.Vector();
 const vectorLayer = new ol.layer.Vector({
   source: vectorSource,
   style: feature => {
+    if (feature.get("isCctvMarker")) {
+      return new ol.style.Style({
+        image: new ol.style.RegularShape({
+          points: 4,
+          radius: 8,
+          angle: Math.PI / 4,
+          fill: new ol.style.Fill({ color: "#2d7dd2" }),
+          stroke: new ol.style.Stroke({ color: "#ffffff", width: 2 })
+        }),
+        text: new ol.style.Text({
+          text: String(feature.get("cctvRank") || ""),
+          font: "700 10px Arial, sans-serif",
+          fill: new ol.style.Fill({ color: "#ffffff" }),
+          offsetY: 1
+        })
+      });
+    }
     if (!feature.get("isSearchResult")) return null;
     const confidence = feature.get("confidence");
     const color = confidence === "low" ? "#b45309" : "#172026";
@@ -197,6 +215,7 @@ async function loadData() {
 
 function markPending() {
   state.selectedFeature = null;
+  state.nearbyCctvs = [];
   vectorSource.clear();
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
@@ -313,13 +332,27 @@ function refreshDirectionOptions() {
 
 function refreshMap() {
   vectorSource.clear();
-  if (!state.selectedFeature) return;
+  if (state.selectedFeature) {
+    vectorSource.addFeature(new ol.Feature({
+      geometry: new ol.geom.Point(ol.proj.fromLonLat(state.selectedFeature.geometry.coordinates)),
+      isSearchResult: true,
+      ...state.selectedFeature.properties
+    }));
+  }
 
-  vectorSource.addFeature(new ol.Feature({
-    geometry: new ol.geom.Point(ol.proj.fromLonLat(state.selectedFeature.geometry.coordinates)),
-    isSearchResult: true,
-    ...state.selectedFeature.properties
-  }));
+  state.nearbyCctvs.forEach((item, index) => {
+    const camera = item.camera;
+    const props = camera.properties;
+    vectorSource.addFeature(new ol.Feature({
+      geometry: new ol.geom.Point(ol.proj.fromLonLat(camera.geometry.coordinates)),
+      isCctvMarker: true,
+      cctvRank: index + 1,
+      cctvId: props.id,
+      route: props.route,
+      direction: props.direction,
+      mile: props.mile
+    }));
+  });
 }
 
 async function locate() {
@@ -350,15 +383,17 @@ async function locate() {
     return;
   }
 
-  state.selectedFeature = match.feature;
-  refreshMap();
-
   const lonLat = match.feature.geometry.coordinates;
   const streetViewUrl = makeStreetViewUrl(lonLat);
+  const nearbyCctvs = nearestCctvs(lonLat, 3);
+
+  state.selectedFeature = match.feature;
+  state.nearbyCctvs = nearbyCctvs;
+  refreshMap();
+
   streetViewButton.href = streetViewUrl;
   streetViewButton.classList.remove("is-disabled");
   map.getView().animate({ center: ol.proj.fromLonLat(lonLat), zoom: 15, duration: 350 });
-  const nearbyCctvs = nearestCctvs(lonLat, 3);
   renderResult(match.feature, match.diff, lonLat, streetViewUrl, nearbyCctvs);
 }
 
@@ -734,6 +769,7 @@ function renderCctvList(items) {
   return `
     <div class="cctv-panel">
       <h3>最近 3 支攝影機</h3>
+      <p class="muted">藍色方形標記已同步顯示在地圖上。</p>
       <ol class="cctv-list">${cards}</ol>
     </div>
   `;
@@ -741,6 +777,7 @@ function renderCctvList(items) {
 
 function renderNoResult(route, direction) {
   state.selectedFeature = null;
+  state.nearbyCctvs = [];
   vectorSource.clear();
   streetViewButton.removeAttribute("href");
   streetViewButton.classList.add("is-disabled");
@@ -778,7 +815,7 @@ locateButton.addEventListener("click", locate);
 
 map.on("click", event => {
   const feature = map.forEachFeatureAtPixel(event.pixel, item => item);
-  if (!feature) return;
+  if (!feature || feature.get("isCctvMarker")) return;
   routeSelect.value = feature.get("route");
   refreshDirectionOptions();
   directionSelect.value = feature.get("direction");
