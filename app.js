@@ -58,6 +58,39 @@ const DEFAULT_ROUTE_DIRECTIONS = {
   "台88線": ["east", "west"]
 };
 
+const WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast";
+const WEATHER_FORECAST_DAYS = 8;
+const WEATHER_CODE_LABELS = {
+  0: "晴朗",
+  1: "大致晴朗",
+  2: "局部多雲",
+  3: "陰天",
+  45: "霧",
+  48: "霧凇",
+  51: "毛毛雨",
+  53: "毛毛雨",
+  55: "毛毛雨",
+  56: "凍毛毛雨",
+  57: "凍毛毛雨",
+  61: "小雨",
+  63: "中雨",
+  65: "大雨",
+  66: "凍雨",
+  67: "凍雨",
+  71: "小雪",
+  73: "中雪",
+  75: "大雪",
+  77: "雪粒",
+  80: "陣雨",
+  81: "陣雨",
+  82: "強陣雨",
+  85: "陣雪",
+  86: "強陣雪",
+  95: "雷雨",
+  96: "雷雨冰雹",
+  99: "雷雨冰雹"
+};
+
 const state = {
   category: "freeway",
   data: SAMPLE_MILEPOSTS,
@@ -66,7 +99,8 @@ const state = {
   nearbyCctvs: [],
   selectedFeature: null,
   mapQueryFeature: null,
-  mapCandidates: []
+  mapCandidates: [],
+  weatherForecast: null
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -343,6 +377,7 @@ function markPending() {
   state.nearbyCctvs = [];
   state.mapQueryFeature = null;
   state.mapCandidates = [];
+  state.weatherForecast = null;
   vectorSource.clear();
   clearCctvSnapshotOverlays();
   streetViewButton.removeAttribute("href");
@@ -598,12 +633,17 @@ async function locate() {
   state.nearbyCctvs = nearbyCctvs;
   state.mapQueryFeature = null;
   state.mapCandidates = [];
+  state.weatherForecast = {
+    status: "loading",
+    updatedAt: new Date()
+  };
   refreshMap();
 
   streetViewButton.href = streetViewUrl;
   streetViewButton.classList.remove("is-disabled");
   map.getView().animate({ center: ol.proj.fromLonLat(lonLat), zoom: 15, duration: 350 });
   renderResult(match.feature, match.diff, lonLat, streetViewUrl, nearbyCctvs);
+  loadWeatherForSelection(match.feature, lonLat, match.diff, streetViewUrl, nearbyCctvs);
 }
 
 async function resolveMilepost(pool, km) {
@@ -839,6 +879,64 @@ function nearestCctvs(coord, limit = 3) {
     .slice(0, limit);
 }
 
+async function loadWeatherForSelection(feature, lonLat, diff, streetViewUrl, nearbyCctvs) {
+  try {
+    const forecast = await fetchWeatherForecast(lonLat);
+    if (state.selectedFeature !== feature) return;
+    state.weatherForecast = {
+      status: "ready",
+      updatedAt: new Date(),
+      days: forecast
+    };
+  } catch (error) {
+    if (state.selectedFeature !== feature) return;
+    state.weatherForecast = {
+      status: "error",
+      updatedAt: new Date(),
+      message: error?.message || "天氣預報暫時無法載入。"
+    };
+  }
+  renderResult(feature, diff, lonLat, streetViewUrl, nearbyCctvs);
+}
+
+async function fetchWeatherForecast([lon, lat]) {
+  const params = new URLSearchParams({
+    latitude: lat.toFixed(5),
+    longitude: lon.toFixed(5),
+    daily: [
+      "weather_code",
+      "temperature_2m_max",
+      "temperature_2m_min",
+      "precipitation_probability_max",
+      "wind_speed_10m_max"
+    ].join(","),
+    timezone: "Asia/Taipei",
+    forecast_days: String(WEATHER_FORECAST_DAYS)
+  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5500);
+  try {
+    const response = await fetch(`${WEATHER_API_URL}?${params.toString()}`, { signal: controller.signal });
+    if (!response.ok) throw new Error("天氣服務回應異常。");
+    const payload = await response.json();
+    const daily = payload.daily || {};
+    if (!Array.isArray(daily.time) || !daily.time.length) throw new Error("天氣資料格式異常。");
+    return daily.time.map((date, index) => ({
+      date,
+      code: daily.weather_code?.[index],
+      high: daily.temperature_2m_max?.[index],
+      low: daily.temperature_2m_min?.[index],
+      rainChance: daily.precipitation_probability_max?.[index],
+      windKmh: daily.wind_speed_10m_max?.[index]
+    })).filter(day => day.date);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("天氣預報載入逾時。");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function allControlPoints() {
   const cctvPoints = state.cctvs
     .filter(camera => Number.isFinite(camera.properties.km) && Array.isArray(camera.geometry.coordinates))
@@ -1037,6 +1135,52 @@ function makeStreetViewUrl([lon, lat]) {
   return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat.toFixed(7)},${lon.toFixed(7)}`;
 }
 
+function formatWeatherDate(dateText, index) {
+  const date = new Date(`${dateText}T00:00:00+08:00`);
+  if (Number.isNaN(date.getTime())) return dateText;
+  const label = index === 0 ? "今天" : date.toLocaleDateString("zh-TW", { weekday: "short" });
+  return `${label} ${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function formatWeatherValue(value, suffix) {
+  return Number.isFinite(Number(value)) ? `${Math.round(Number(value))}${suffix}` : "--";
+}
+
+function renderWeatherPanel(forecast) {
+  if (!forecast || forecast.status === "loading") {
+    return `
+      <div class="weather-panel">
+        <h3>定位點天氣預報</h3>
+        <p class="muted">正在載入今天到未來一周的天氣預報...</p>
+      </div>
+    `;
+  }
+  if (forecast.status === "error") {
+    return `
+      <div class="weather-panel">
+        <h3>定位點天氣預報</h3>
+        <p class="muted">${escapeHtml(forecast.message || "天氣預報暫時無法載入。")}</p>
+      </div>
+    `;
+  }
+  const cards = forecast.days.map((day, index) => `
+    <li class="weather-day">
+      <strong>${escapeHtml(formatWeatherDate(day.date, index))}</strong>
+      <span>${escapeHtml(WEATHER_CODE_LABELS[day.code] || "天氣變化")}</span>
+      <small>高低溫 ${formatWeatherValue(day.high, "°")} / ${formatWeatherValue(day.low, "°")}</small>
+      <small>降雨 ${formatWeatherValue(day.rainChance, "%")} · 風速 ${formatWeatherValue(day.windKmh, " km/h")}</small>
+    </li>
+  `).join("");
+
+  return `
+    <div class="weather-panel">
+      <h3>定位點天氣預報</h3>
+      <p class="muted">資料來源：Open-Meteo，依定位座標估算今天到未來一周。</p>
+      <ol class="weather-list">${cards}</ol>
+    </div>
+  `;
+}
+
 function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []) {
   const properties = feature.properties;
   const modeLabels = {
@@ -1088,6 +1232,7 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []
     ? `<p class="warning-text">${properties.roadGeometryStatus}。</p>`
     : "";
   const cctvList = renderCctvList(nearbyCctvs);
+  const weatherPanel = renderWeatherPanel(state.weatherForecast);
 
   resultCard.innerHTML = `
     <div class="result-title">${properties.route} ${DIRECTIONS[properties.direction] || properties.direction} ${formatKm(properties.km)}</div>
@@ -1107,6 +1252,7 @@ function renderResult(feature, diff, [lon, lat], streetViewUrl, nearbyCctvs = []
     ${warning}
     ${roadFallback}
     <p class="muted">Street View 會開啟 Google Maps 全景檢視 URL。</p>
+    ${weatherPanel}
     ${cctvList}
   `;
 }
@@ -1159,6 +1305,7 @@ function renderMapCandidates(candidates, clickCoord) {
   state.selectedFeature = null;
   state.nearbyCctvs = [];
   state.mapCandidates = candidates;
+  state.weatherForecast = null;
   state.mapQueryFeature = {
     type: "Feature",
     properties: {},
@@ -1218,6 +1365,7 @@ function renderNoResult(route, direction) {
   state.nearbyCctvs = [];
   state.mapQueryFeature = null;
   state.mapCandidates = [];
+  state.weatherForecast = null;
   vectorSource.clear();
   clearCctvSnapshotOverlays();
   streetViewButton.removeAttribute("href");

@@ -243,13 +243,34 @@ a:focus-visible {
   border-top: 1px solid var(--line);
 }
 
+.weather-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .cctv-panel h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.weather-panel h3 {
   margin: 0;
   font-size: 0.95rem;
 }
 
 .cctv-list {
   display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weather-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -265,6 +286,35 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
+}
+
+.weather-day {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.weather-day strong,
+.weather-day span,
+.weather-day small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.weather-day span {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.weather-day small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 .cctv-thumb {
@@ -553,5 +603,9 @@ a:focus-visible {
 
   .cctv-actions {
     justify-content: flex-start;
+  }
+
+  .weather-list {
+    grid-template-columns: 1fr;
   }
 }
