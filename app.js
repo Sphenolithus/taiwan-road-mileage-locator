@@ -62,6 +62,35 @@ const WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast";
 const WEATHER_FORECAST_DAYS = 8;
 const ARCGIS_TILE_BASE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services";
 const OPEN_TOPO_TILE_URL = "https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png";
+const RADAR_OVERLAY_OPACITY = 0.62;
+const RADAR_IMAGE_RANGE_KM = 150;
+const RADAR_CACHE_BUSTER = new Date().toISOString().slice(0, 13);
+const RADAR_OVERLAYS = [
+  {
+    id: "O-A0084-001",
+    name: "樹林雷達",
+    lon: 121.4,
+    lat: 25,
+    observedAt: "2026-07-24T11:32:00+08:00",
+    imageUrl: "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0084-001.png"
+  },
+  {
+    id: "O-A0084-002",
+    name: "南屯雷達",
+    lon: 120.58,
+    lat: 24.14,
+    observedAt: "2026-07-24T11:30:00+08:00",
+    imageUrl: "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0084-002.png"
+  },
+  {
+    id: "O-A0084-003",
+    name: "林園雷達",
+    lon: 120.38,
+    lat: 22.53,
+    observedAt: "2026-07-24T11:26:00+08:00",
+    imageUrl: "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0084-003.png"
+  }
+];
 const WEATHER_CODE_LABELS = {
   0: "晴朗",
   1: "大致晴朗",
@@ -103,7 +132,9 @@ const state = {
   mapQueryFeature: null,
   mapCandidates: [],
   weatherForecast: null,
-  basemap: "street"
+  basemap: "street",
+  radarVisible: false,
+  radarOpacity: RADAR_OVERLAY_OPACITY
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -115,6 +146,9 @@ const streetViewButton = document.querySelector("#streetViewButton");
 const locateButton = document.querySelector("#locateButton");
 const segments = Array.from(document.querySelectorAll(".segment"));
 const basemapButtons = Array.from(document.querySelectorAll(".basemap-button"));
+const radarLayerToggle = document.querySelector("#radarLayerToggle");
+const radarOpacityInput = document.querySelector("#radarOpacityInput");
+const radarStatus = document.querySelector("#radarStatus");
 const cameraDialog = document.querySelector("#cameraDialog");
 const cameraDialogImage = document.querySelector("#cameraDialogImage");
 const cameraDialogTitle = document.querySelector("#cameraDialogTitle");
@@ -149,6 +183,16 @@ const terrainLayer = new ol.layer.Tile({
   }),
   visible: false
 });
+const radarLayers = RADAR_OVERLAYS.map(radar => new ol.layer.Image({
+  source: new ol.source.ImageStatic({
+    url: `${radar.imageUrl}?v=${encodeURIComponent(RADAR_CACHE_BUSTER)}`,
+    imageExtent: radarImageExtent(radar),
+    projection: "EPSG:3857",
+    attributions: "雷達回波 &copy; 中央氣象署"
+  }),
+  opacity: state.radarOpacity,
+  visible: state.radarVisible
+}));
 const vectorLayer = new ol.layer.Vector({
   source: vectorSource,
   style: feature => {
@@ -197,6 +241,7 @@ const map = new ol.Map({
     streetLayer,
     imageryLayer,
     terrainLayer,
+    ...radarLayers,
     imageryReferenceLayer,
     vectorLayer
   ],
@@ -206,6 +251,17 @@ const map = new ol.Map({
   })
 });
 const cctvSnapshotOverlays = [];
+
+function radarImageExtent(radar) {
+  const latDelta = RADAR_IMAGE_RANGE_KM / 110.574;
+  const lonDelta = RADAR_IMAGE_RANGE_KM / (111.32 * Math.cos(radar.lat * Math.PI / 180));
+  return ol.proj.transformExtent([
+    radar.lon - lonDelta,
+    radar.lat - latDelta,
+    radar.lon + lonDelta,
+    radar.lat + latDelta
+  ], "EPSG:4326", "EPSG:3857");
+}
 
 function switchBasemap(basemap) {
   state.basemap = basemap;
@@ -218,6 +274,30 @@ function switchBasemap(basemap) {
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
   });
+}
+
+function setRadarOverlayVisible(visible) {
+  state.radarVisible = visible;
+  radarLayers.forEach(layer => layer.setVisible(visible));
+  if (radarLayerToggle) radarLayerToggle.checked = visible;
+  renderRadarStatus();
+}
+
+function setRadarOverlayOpacity(opacity) {
+  const normalized = Math.max(0.15, Math.min(0.9, Number(opacity) / 100));
+  state.radarOpacity = normalized;
+  radarLayers.forEach(layer => layer.setOpacity(normalized));
+  if (radarOpacityInput) radarOpacityInput.value = String(Math.round(normalized * 100));
+}
+
+function renderRadarStatus() {
+  if (!radarStatus) return;
+  if (!state.radarVisible) {
+    radarStatus.textContent = "雷達回波圖層目前關閉。";
+    return;
+  }
+  const names = RADAR_OVERLAYS.map(radar => radar.name).join("、");
+  radarStatus.textContent = `已疊加 ${RADAR_OVERLAYS.length} 個雷達回波圖：${names}。`;
 }
 
 function clearCctvSnapshotOverlays() {
@@ -1437,6 +1517,18 @@ basemapButtons.forEach(button => {
   });
 });
 switchBasemap(state.basemap);
+if (radarLayerToggle) {
+  radarLayerToggle.addEventListener("change", () => {
+    setRadarOverlayVisible(radarLayerToggle.checked);
+  });
+}
+if (radarOpacityInput) {
+  radarOpacityInput.addEventListener("input", () => {
+    setRadarOverlayOpacity(radarOpacityInput.value);
+  });
+}
+setRadarOverlayOpacity(state.radarOpacity * 100);
+setRadarOverlayVisible(state.radarVisible);
 
 routeSelect.addEventListener("change", () => {
   refreshDirectionOptions();
