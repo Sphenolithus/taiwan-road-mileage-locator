@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台灣主要道路里程定位</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260724-radar-overlay" />
+    <link rel="stylesheet" href="./styles.css?v=20260724-radar-order" />
   </head>
   <body>
     <main class="app-shell">
@@ -65,6 +65,33 @@
             <span class="field-label">雷達透明度</span>
             <input id="radarOpacityInput" type="range" min="15" max="90" step="5" value="62" />
           </label>
+          <div class="radar-order-control">
+            <span class="field-label">雷達疊圖順序（由下到上）</span>
+            <label>
+              <span>底層</span>
+              <select class="radar-order-select" data-order-slot="0">
+                <option value="O-A0084-001">樹林雷達</option>
+                <option value="O-A0084-002">南屯雷達</option>
+                <option value="O-A0084-003">林園雷達</option>
+              </select>
+            </label>
+            <label>
+              <span>中層</span>
+              <select class="radar-order-select" data-order-slot="1">
+                <option value="O-A0084-001">樹林雷達</option>
+                <option value="O-A0084-002" selected>南屯雷達</option>
+                <option value="O-A0084-003">林園雷達</option>
+              </select>
+            </label>
+            <label>
+              <span>上層</span>
+              <select class="radar-order-select" data-order-slot="2">
+                <option value="O-A0084-001">樹林雷達</option>
+                <option value="O-A0084-002">南屯雷達</option>
+                <option value="O-A0084-003" selected>林園雷達</option>
+              </select>
+            </label>
+          </div>
           <p id="radarStatus" class="muted">雷達回波圖層目前關閉。</p>
         </div>
 
@@ -105,6 +132,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
-    <script src="./app.js?v=20260724-radar-overlay"></script>
+    <script src="./app.js?v=20260724-radar-order"></script>
   </body>
 </html>

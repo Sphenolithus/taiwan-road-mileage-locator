@@ -91,6 +91,8 @@ const RADAR_OVERLAYS = [
     imageUrl: "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0084-003.png"
   }
 ];
+const RADAR_LAYER_BASE_Z_INDEX = 10;
+const DEFAULT_RADAR_LAYER_ORDER = ["O-A0084-001", "O-A0084-002", "O-A0084-003"];
 const WEATHER_CODE_LABELS = {
   0: "晴朗",
   1: "大致晴朗",
@@ -134,7 +136,8 @@ const state = {
   weatherForecast: null,
   basemap: "street",
   radarVisible: false,
-  radarOpacity: RADAR_OVERLAY_OPACITY
+  radarOpacity: RADAR_OVERLAY_OPACITY,
+  radarOrder: DEFAULT_RADAR_LAYER_ORDER
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -148,6 +151,7 @@ const segments = Array.from(document.querySelectorAll(".segment"));
 const basemapButtons = Array.from(document.querySelectorAll(".basemap-button"));
 const radarLayerToggle = document.querySelector("#radarLayerToggle");
 const radarOpacityInput = document.querySelector("#radarOpacityInput");
+const radarOrderSelects = Array.from(document.querySelectorAll(".radar-order-select"));
 const radarStatus = document.querySelector("#radarStatus");
 const cameraDialog = document.querySelector("#cameraDialog");
 const cameraDialogImage = document.querySelector("#cameraDialogImage");
@@ -160,28 +164,32 @@ const cameraDialogCloseButtons = Array.from(document.querySelectorAll("[data-clo
 const vectorSource = new ol.source.Vector();
 const streetLayer = new ol.layer.Tile({
   source: new ol.source.OSM(),
-  visible: true
+  visible: true,
+  zIndex: 0
 });
 const imageryLayer = new ol.layer.Tile({
   source: new ol.source.XYZ({
     url: `${ARCGIS_TILE_BASE_URL}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
     attributions: "Tiles &copy; Esri"
   }),
-  visible: false
+  visible: false,
+  zIndex: 0
 });
 const imageryReferenceLayer = new ol.layer.Tile({
   source: new ol.source.XYZ({
     url: `${ARCGIS_TILE_BASE_URL}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`,
     attributions: "Tiles &copy; Esri"
   }),
-  visible: false
+  visible: false,
+  zIndex: 20
 });
 const terrainLayer = new ol.layer.Tile({
   source: new ol.source.XYZ({
     url: OPEN_TOPO_TILE_URL,
     attributions: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap (CC-BY-SA)'
   }),
-  visible: false
+  visible: false,
+  zIndex: 0
 });
 const radarLayers = RADAR_OVERLAYS.map(radar => new ol.layer.Image({
   source: new ol.source.ImageStatic({
@@ -191,10 +199,12 @@ const radarLayers = RADAR_OVERLAYS.map(radar => new ol.layer.Image({
     attributions: "雷達回波 &copy; 中央氣象署"
   }),
   opacity: state.radarOpacity,
-  visible: state.radarVisible
+  visible: state.radarVisible,
+  zIndex: RADAR_LAYER_BASE_Z_INDEX
 }));
 const vectorLayer = new ol.layer.Vector({
   source: vectorSource,
+  zIndex: 30,
   style: feature => {
     if (feature.get("isCctvMarker")) {
       return new ol.style.Style({
@@ -290,14 +300,52 @@ function setRadarOverlayOpacity(opacity) {
   if (radarOpacityInput) radarOpacityInput.value = String(Math.round(normalized * 100));
 }
 
+function setRadarLayerOrder(orderValue) {
+  const ids = Array.isArray(orderValue)
+    ? orderValue
+    : String(orderValue || "").split(",").filter(Boolean);
+  const order = normalizeRadarOrder(ids);
+  state.radarOrder = order;
+  radarLayers.forEach((layer, index) => {
+    const radar = RADAR_OVERLAYS[index];
+    const orderIndex = order.indexOf(radar.id);
+    layer.setZIndex(RADAR_LAYER_BASE_Z_INDEX + Math.max(0, orderIndex));
+  });
+  syncRadarOrderControls(order);
+  renderRadarStatus();
+}
+
+function normalizeRadarOrder(values) {
+  const validIds = RADAR_OVERLAYS.map(radar => radar.id);
+  const used = new Set();
+  const normalized = values.slice(0, RADAR_OVERLAYS.length).map(value => {
+    if (!validIds.includes(value) || used.has(value)) return null;
+    used.add(value);
+    return value;
+  });
+  const missing = validIds.filter(id => !used.has(id));
+  while (normalized.length < RADAR_OVERLAYS.length) normalized.push(null);
+  return normalized.map(value => value || missing.shift());
+}
+
+function syncRadarOrderControls(order) {
+  radarOrderSelects.forEach((select, index) => {
+    select.value = order[index] || RADAR_OVERLAYS[index]?.id || "";
+  });
+}
+
 function renderRadarStatus() {
   if (!radarStatus) return;
   if (!state.radarVisible) {
     radarStatus.textContent = "雷達回波圖層目前關閉。";
     return;
   }
-  const names = RADAR_OVERLAYS.map(radar => radar.name).join("、");
-  radarStatus.textContent = `已疊加 ${RADAR_OVERLAYS.length} 個雷達回波圖：${names}。`;
+  const names = state.radarOrder.map(radarId => radarName(radarId)).join(" → ");
+  radarStatus.textContent = `已疊加 ${RADAR_OVERLAYS.length} 個雷達回波圖。由下到上：${names}。`;
+}
+
+function radarName(radarId) {
+  return RADAR_OVERLAYS.find(radar => radar.id === radarId)?.name || radarId;
 }
 
 function clearCctvSnapshotOverlays() {
@@ -1527,7 +1575,13 @@ if (radarOpacityInput) {
     setRadarOverlayOpacity(radarOpacityInput.value);
   });
 }
+radarOrderSelects.forEach(select => {
+  select.addEventListener("change", () => {
+    setRadarLayerOrder(radarOrderSelects.map(item => item.value));
+  });
+});
 setRadarOverlayOpacity(state.radarOpacity * 100);
+setRadarLayerOrder(state.radarOrder);
 setRadarOverlayVisible(state.radarVisible);
 
 routeSelect.addEventListener("change", () => {

@@ -178,6 +178,28 @@ h2 {
   accent-color: var(--accent);
 }
 
+.radar-order-control {
+  display: grid;
+  gap: 8px;
+}
+
+.radar-order-control label {
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.radar-order-control label span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.radar-order-control select {
+  min-height: 38px;
+}
+
 select,
 input {
   width: 100%;
