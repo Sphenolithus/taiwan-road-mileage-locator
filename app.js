@@ -64,7 +64,7 @@ const ARCGIS_TILE_BASE_URL = "https://server.arcgisonline.com/ArcGIS/rest/servic
 const OPEN_TOPO_TILE_URL = "https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png";
 const RADAR_OVERLAY_OPACITY = 0.62;
 const RADAR_IMAGE_RANGE_KM = 150;
-const RADAR_CACHE_BUSTER = new Date().toISOString().slice(0, 13);
+const RADAR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const RADAR_OVERLAYS = [
   {
     id: "O-A0084-001",
@@ -137,7 +137,8 @@ const state = {
   basemap: "street",
   radarVisible: false,
   radarOpacity: RADAR_OVERLAY_OPACITY,
-  radarOrder: DEFAULT_RADAR_LAYER_ORDER
+  radarOrder: DEFAULT_RADAR_LAYER_ORDER,
+  radarLastUpdatedAt: new Date()
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -192,12 +193,7 @@ const terrainLayer = new ol.layer.Tile({
   zIndex: 0
 });
 const radarLayers = RADAR_OVERLAYS.map(radar => new ol.layer.Image({
-  source: new ol.source.ImageStatic({
-    url: `${radar.imageUrl}?v=${encodeURIComponent(RADAR_CACHE_BUSTER)}`,
-    imageExtent: radarImageExtent(radar),
-    projection: "EPSG:3857",
-    attributions: "雷達回波 &copy; 中央氣象署"
-  }),
+  source: createRadarImageSource(radar, state.radarLastUpdatedAt),
   opacity: state.radarOpacity,
   visible: state.radarVisible,
   zIndex: RADAR_LAYER_BASE_Z_INDEX
@@ -273,6 +269,19 @@ function radarImageExtent(radar) {
   ];
 }
 
+function radarImageUrl(radar, date = new Date()) {
+  return `${radar.imageUrl}?v=${encodeURIComponent(date.toISOString())}`;
+}
+
+function createRadarImageSource(radar, date = new Date()) {
+  return new ol.source.ImageStatic({
+    url: radarImageUrl(radar, date),
+    imageExtent: radarImageExtent(radar),
+    projection: "EPSG:3857",
+    attributions: "雷達回波 &copy; 中央氣象署"
+  });
+}
+
 function switchBasemap(basemap) {
   state.basemap = basemap;
   streetLayer.setVisible(basemap === "street");
@@ -298,6 +307,15 @@ function setRadarOverlayOpacity(opacity) {
   state.radarOpacity = normalized;
   radarLayers.forEach(layer => layer.setOpacity(normalized));
   if (radarOpacityInput) radarOpacityInput.value = String(Math.round(normalized * 100));
+}
+
+function refreshRadarOverlays(date = new Date()) {
+  state.radarLastUpdatedAt = date;
+  radarLayers.forEach((layer, index) => {
+    const radar = RADAR_OVERLAYS[index];
+    layer.setSource(createRadarImageSource(radar, date));
+  });
+  renderRadarStatus();
 }
 
 function setRadarLayerOrder(orderValue) {
@@ -336,16 +354,29 @@ function syncRadarOrderControls(order) {
 
 function renderRadarStatus() {
   if (!radarStatus) return;
+  const updatedText = `上次更新：${formatRadarRefreshTime(state.radarLastUpdatedAt)}`;
   if (!state.radarVisible) {
-    radarStatus.textContent = "雷達回波圖層目前關閉。";
+    radarStatus.textContent = `雷達回波圖層目前關閉。${updatedText}。`;
     return;
   }
   const names = state.radarOrder.map(radarId => radarName(radarId)).join(" → ");
-  radarStatus.textContent = `已疊加 ${RADAR_OVERLAYS.length} 個雷達回波圖。由下到上：${names}。`;
+  radarStatus.textContent = `已疊加 ${RADAR_OVERLAYS.length} 個雷達回波圖。由下到上：${names}。${updatedText}。`;
 }
 
 function radarName(radarId) {
   return RADAR_OVERLAYS.find(radar => radar.id === radarId)?.name || radarId;
+}
+
+function formatRadarRefreshTime(date) {
+  const value = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(value.getTime())) return "尚未更新";
+  return value.toLocaleString("zh-TW", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
 }
 
 function clearCctvSnapshotOverlays() {
@@ -1583,6 +1614,9 @@ radarOrderSelects.forEach(select => {
 setRadarOverlayOpacity(state.radarOpacity * 100);
 setRadarLayerOrder(state.radarOrder);
 setRadarOverlayVisible(state.radarVisible);
+window.setInterval(() => {
+  refreshRadarOverlays(new Date());
+}, RADAR_REFRESH_INTERVAL_MS);
 
 routeSelect.addEventListener("change", () => {
   refreshDirectionOptions();
