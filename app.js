@@ -253,14 +253,14 @@ const map = new ol.Map({
 const cctvSnapshotOverlays = [];
 
 function radarImageExtent(radar) {
-  const latDelta = RADAR_IMAGE_RANGE_KM / 110.574;
-  const lonDelta = RADAR_IMAGE_RANGE_KM / (111.32 * Math.cos(radar.lat * Math.PI / 180));
-  return ol.proj.transformExtent([
-    radar.lon - lonDelta,
-    radar.lat - latDelta,
-    radar.lon + lonDelta,
-    radar.lat + latDelta
-  ], "EPSG:4326", "EPSG:3857");
+  const [centerX, centerY] = ol.proj.fromLonLat([radar.lon, radar.lat]);
+  const rangeMeters = RADAR_IMAGE_RANGE_KM * 1000;
+  return [
+    centerX - rangeMeters,
+    centerY - rangeMeters,
+    centerX + rangeMeters,
+    centerY + rangeMeters
+  ];
 }
 
 function switchBasemap(basemap) {
