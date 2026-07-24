@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台灣主要道路里程定位</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260709-weather-forecast" />
+    <link rel="stylesheet" href="./styles.css?v=20260724-basemaps" />
   </head>
   <body>
     <main class="app-shell">
@@ -47,6 +47,15 @@
           <a id="streetViewButton" class="secondary-button is-disabled" target="_blank" rel="noreferrer">Street View</a>
         </div>
 
+        <div class="field-group">
+          <span class="field-label">底圖</span>
+          <div class="basemap-options" role="group" aria-label="底圖選擇">
+            <button class="basemap-button is-active" type="button" data-basemap="street">一般地圖</button>
+            <button class="basemap-button" type="button" data-basemap="imagery">衛星影像</button>
+            <button class="basemap-button" type="button" data-basemap="terrain">地形圖</button>
+          </div>
+        </div>
+
         <section id="resultCard" class="result-card" aria-live="polite">
           <p class="muted">請選擇道路與方向，輸入罰單上的里程數。</p>
         </section>
@@ -84,6 +93,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
-    <script src="./app.js?v=20260709-weather-forecast"></script>
+    <script src="./app.js?v=20260724-basemaps"></script>
   </body>
 </html>

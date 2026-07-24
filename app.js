@@ -60,6 +60,8 @@ const DEFAULT_ROUTE_DIRECTIONS = {
 
 const WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast";
 const WEATHER_FORECAST_DAYS = 8;
+const ARCGIS_TILE_BASE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services";
+const OPEN_TOPO_TILE_URL = "https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png";
 const WEATHER_CODE_LABELS = {
   0: "晴朗",
   1: "大致晴朗",
@@ -100,7 +102,8 @@ const state = {
   selectedFeature: null,
   mapQueryFeature: null,
   mapCandidates: [],
-  weatherForecast: null
+  weatherForecast: null,
+  basemap: "street"
 };
 
 const routeSelect = document.querySelector("#routeSelect");
@@ -111,6 +114,7 @@ const dataStatus = document.querySelector("#dataStatus");
 const streetViewButton = document.querySelector("#streetViewButton");
 const locateButton = document.querySelector("#locateButton");
 const segments = Array.from(document.querySelectorAll(".segment"));
+const basemapButtons = Array.from(document.querySelectorAll(".basemap-button"));
 const cameraDialog = document.querySelector("#cameraDialog");
 const cameraDialogImage = document.querySelector("#cameraDialogImage");
 const cameraDialogTitle = document.querySelector("#cameraDialogTitle");
@@ -120,6 +124,31 @@ const cameraDialogSnapshot = document.querySelector("#cameraDialogSnapshot");
 const cameraDialogCloseButtons = Array.from(document.querySelectorAll("[data-close-camera-dialog]"));
 
 const vectorSource = new ol.source.Vector();
+const streetLayer = new ol.layer.Tile({
+  source: new ol.source.OSM(),
+  visible: true
+});
+const imageryLayer = new ol.layer.Tile({
+  source: new ol.source.XYZ({
+    url: `${ARCGIS_TILE_BASE_URL}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
+    attributions: "Tiles &copy; Esri"
+  }),
+  visible: false
+});
+const imageryReferenceLayer = new ol.layer.Tile({
+  source: new ol.source.XYZ({
+    url: `${ARCGIS_TILE_BASE_URL}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`,
+    attributions: "Tiles &copy; Esri"
+  }),
+  visible: false
+});
+const terrainLayer = new ol.layer.Tile({
+  source: new ol.source.XYZ({
+    url: OPEN_TOPO_TILE_URL,
+    attributions: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap (CC-BY-SA)'
+  }),
+  visible: false
+});
 const vectorLayer = new ol.layer.Vector({
   source: vectorSource,
   style: feature => {
@@ -165,9 +194,10 @@ const vectorLayer = new ol.layer.Vector({
 const map = new ol.Map({
   target: "map",
   layers: [
-    new ol.layer.Tile({
-      source: new ol.source.OSM()
-    }),
+    streetLayer,
+    imageryLayer,
+    terrainLayer,
+    imageryReferenceLayer,
     vectorLayer
   ],
   view: new ol.View({
@@ -176,6 +206,19 @@ const map = new ol.Map({
   })
 });
 const cctvSnapshotOverlays = [];
+
+function switchBasemap(basemap) {
+  state.basemap = basemap;
+  streetLayer.setVisible(basemap === "street");
+  imageryLayer.setVisible(basemap === "imagery");
+  imageryReferenceLayer.setVisible(basemap === "imagery");
+  terrainLayer.setVisible(basemap === "terrain");
+  basemapButtons.forEach(button => {
+    const isActive = button.dataset.basemap === basemap;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+}
 
 function clearCctvSnapshotOverlays() {
   cctvSnapshotOverlays.splice(0).forEach(overlay => map.removeOverlay(overlay));
@@ -1387,6 +1430,13 @@ segments.forEach(segment => {
     markPending();
   });
 });
+
+basemapButtons.forEach(button => {
+  button.addEventListener("click", () => {
+    switchBasemap(button.dataset.basemap || "street");
+  });
+});
+switchBasemap(state.basemap);
 
 routeSelect.addEventListener("change", () => {
   refreshDirectionOptions();
